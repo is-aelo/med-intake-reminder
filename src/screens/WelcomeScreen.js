@@ -1,30 +1,37 @@
 import React from 'react';
 import { View, StyleSheet } from 'react-native';
-import { Text, Button } from 'react-native-paper';
-import { theme } from '../theme';
+import { Text, Button, useTheme } from 'react-native-paper';
 
 export default function WelcomeScreen({ onStart }) {
+  const theme = useTheme();
+
   return (
-    <View style={styles.container}>
+    <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
       <View style={styles.welcomeContent}>
-        <Text style={styles.logo}>💊</Text>
-        <Text variant="displaySmall" style={styles.appName}>
+        {/* Soft circle background for the icon to make it look premium */}
+        <View style={[styles.iconCircle, { backgroundColor: theme.colors.primaryContainer }]}>
+          <Text style={styles.logo}>💊</Text>
+        </View>
+
+        <Text variant="displaySmall" style={[styles.appName, { color: theme.colors.primary }]}>
           MedReminder
         </Text>
-        <Text variant="bodyLarge" style={styles.description}>
-          Your simple and reliable partner in health. Never miss a dose again.
+        
+        <Text variant="bodyLarge" style={[styles.description, { color: theme.colors.secondary }]}>
+          Your simple and reliable partner in health.{"\n"}Never miss a dose again.
         </Text>
 
         <Button 
           mode="contained" 
           style={styles.startButton}
-          contentStyle={styles.buttonSpacing}
+          contentStyle={styles.buttonContent}
           onPress={onStart}
+          // Geist Medium will automatically apply from theme labelLarge
         >
           Get Started
         </Button>
 
-        <Text variant="labelSmall" style={styles.footer}>
+        <Text variant="labelSmall" style={[styles.footer, { color: theme.colors.outline }]}>
           Version 1.0.0
         </Text>
       </View>
@@ -35,7 +42,6 @@ export default function WelcomeScreen({ onStart }) {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#F6F6F6',
   },
   welcomeContent: {
     flex: 1,
@@ -43,32 +49,45 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     padding: 30,
   },
+  iconCircle: {
+    width: 140,
+    height: 140,
+    borderRadius: 70,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 30,
+    // Subtle elevation for modern look
+    elevation: 2,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.05,
+    shadowRadius: 10,
+  },
   logo: {
-    fontSize: 80,
-    marginBottom: 10,
+    fontSize: 60,
   },
   appName: {
-    fontWeight: 'bold',
-    color: theme.colors.primary,
-    marginBottom: 10,
+    marginBottom: 12,
+    textAlign: 'center',
+    // We rely on theme.fonts.displaySmall for Geist-Bold
   },
   description: {
     textAlign: 'center',
-    color: '#4B5D4C',
-    lineHeight: 24,
-    marginBottom: 40,
+    lineHeight: 26,
+    marginBottom: 50,
+    paddingHorizontal: 10,
   },
   startButton: {
     width: '100%',
-    borderRadius: 30,
-    backgroundColor: theme.colors.primary,
+    paddingVertical: 4,
+    // theme.roundness (16) will apply automatically here
   },
-  buttonSpacing: {
-    paddingVertical: 8,
+  buttonContent: {
+    height: 48,
   },
   footer: {
     position: 'absolute',
-    bottom: 20,
-    color: '#80AF81',
+    bottom: 30,
+    letterSpacing: 1,
   },
 });
