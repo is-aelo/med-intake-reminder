@@ -2,9 +2,27 @@ import React from 'react';
 import { PaperProvider } from 'react-native-paper';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { useFonts } from 'expo-font';
+import { registerTranslation } from 'react-native-paper-dates';
+
+// REMOVED: import 'intl'; 
+// REMOVED: import 'intl/locale-data/jsonp/en';
 
 import { theme } from './src/theme';
 import HomeScreen from './src/screens/HomeScreen';
+
+registerTranslation('en', {
+  save: 'Save',
+  selectSingle: 'Select date',
+  selectMultiple: 'Select dates',
+  selectRange: 'Select period',
+  type: 'Type',
+  clear: 'Clear',
+  today: 'Today',
+  disabled: 'Disabled',
+  confirm: 'Confirm',
+  cancel: 'Cancel',
+  close: 'Close',
+});
 
 export default function App() {
   const [fontsLoaded] = useFonts({
