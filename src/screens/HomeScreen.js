@@ -22,7 +22,7 @@ export default function HomeScreen() {
 
       <View style={styles.content}>
         <Text variant="headlineSmall" style={{ color: theme.colors.primary, fontWeight: 'bold' }}>
-          Today's Meds
+          Today's Medication
         </Text>
         <Text variant="bodyMedium" style={{ marginTop: 10 }}>
           Your list is empty. Add your first medicine!
