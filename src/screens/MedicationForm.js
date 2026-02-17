@@ -1,10 +1,11 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { View, StyleSheet, ScrollView, KeyboardAvoidingView, Platform, StatusBar } from 'react-native';
 import { Text, Button, useTheme, IconButton, TouchableRipple, SegmentedButtons, Surface, Switch } from 'react-native-paper';
 
 // Realm Imports
 import { useRealm, useQuery } from '@realm/react';
 import { Profile, Medication } from '../models/Schemas';
+import * as Realm from 'realm';
 
 // Components
 import { FormLabel, ModernInput } from '../components/FormInput';
@@ -24,11 +25,23 @@ import {
   formatTime 
 } from '../constants/medicationOptions';
 
-export default function AddMedication({ onBack }) {
+export default function AddMedication({ onBack, medicationId = null }) {
   const theme = useTheme();
   const realm = useRealm();
   const profiles = useQuery(Profile);
   const mainProfile = profiles.filtered('isMain == true')[0];
+
+  // FETCH LOGIC (SAFE FOR EDIT/ADD)
+  const medications = useQuery(Medication);
+  const existingMed = useMemo(() => {
+    if (!medicationId) return null;
+    try {
+      const targetId = typeof medicationId === 'string' ? new Realm.BSON.UUID(medicationId) : medicationId;
+      return medications.filtered('_id == $0', targetId)[0];
+    } catch (e) {
+      return null;
+    }
+  }, [medicationId, medications]);
 
   const [form, setForm] = useState({
     name: '',
@@ -56,6 +69,27 @@ export default function AddMedication({ onBack }) {
     selectionHandleColor: theme.colors.primary,
   };
 
+  // SYNC DATA FROM REALM (IF EDITING)
+  useEffect(() => {
+    if (existingMed) {
+      setForm({
+        name: existingMed.name || '',
+        dosage: String(existingMed.dosage || ''),
+        unit: existingMed.unit || 'mg',
+        category: existingMed.category || 'Tablet',
+        isPermanent: existingMed.isPermanent ?? true,
+        duration: existingMed.duration ? String(existingMed.duration) : '7',
+        frequency: String(existingMed.frequency || 'daily').toLowerCase(),
+        intervalValue: existingMed.intervalValue ? String(existingMed.intervalValue) : '1',
+        startDate: new Date(existingMed.startDate),
+        time: new Date(existingMed.reminderTime),
+        isInventoryEnabled: existingMed.isInventoryEnabled || false,
+        stock: String(existingMed.stock || '0'),
+        reorderLevel: String(existingMed.reorderLevel || '5'),
+      });
+    }
+  }, [existingMed]);
+
   useEffect(() => {
     if (!form.isPermanent && form.frequency === 'interval') {
       const durationNum = parseInt(form.duration) || 0;
@@ -79,8 +113,7 @@ export default function AddMedication({ onBack }) {
 
     try {
       realm.write(() => {
-        const newMedication = realm.create('Medication', {
-          _id: new Realm.BSON.UUID(),
+        const medData = {
           name: form.name,
           dosage: form.dosage,
           unit: form.unit,
@@ -91,13 +124,24 @@ export default function AddMedication({ onBack }) {
           intervalValue: form.intervalValue,
           startDate: form.startDate,
           reminderTime: form.time,
-          createdAt: new Date(),
           isActive: true,
           isInventoryEnabled: form.isInventoryEnabled,
           stock: parseInt(form.stock) || 0,
           reorderLevel: parseInt(form.reorderLevel) || 5,
-        });
-        mainProfile.medications.push(newMedication);
+        };
+
+        if (existingMed) {
+          // UPDATE EXISTING
+          Object.assign(existingMed, medData);
+        } else {
+          // CREATE NEW
+          const newMedication = realm.create('Medication', {
+            _id: new Realm.BSON.UUID(),
+            ...medData,
+            createdAt: new Date(),
+          });
+          mainProfile.medications.push(newMedication);
+        }
       });
       onBack();
     } catch (error) {
@@ -108,12 +152,11 @@ export default function AddMedication({ onBack }) {
   return (
     <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
       <StatusBar barStyle="dark-content" backgroundColor="transparent" translucent />
-      <ScreenHeader title="New Medication" onBack={onBack} />
+      <ScreenHeader title={medicationId ? "Edit Medication" : "New Medication"} onBack={onBack} />
 
       <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={{ flex: 1 }}>
         <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
           
-          {/* MEDICINE DETAILS */}
           <Surface style={[styles.card, { backgroundColor: theme.colors.surface }]} elevation={1}>
             <View style={styles.cardHeader}>
                <IconButton icon="pill" size={20} iconColor={theme.colors.primary} />
@@ -165,7 +208,6 @@ export default function AddMedication({ onBack }) {
             </View>
           </Surface>
 
-          {/* INVENTORY TRACKING */}
           <Surface style={[styles.card, { backgroundColor: theme.colors.surface }]} elevation={1}>
             <View style={styles.inventoryHeader}>
               <View style={styles.cardHeader}>
@@ -212,7 +254,6 @@ export default function AddMedication({ onBack }) {
             )}
           </Surface>
 
-          {/* SCHEDULE */}
           <Surface style={[styles.card, { backgroundColor: theme.colors.surface }]} elevation={1}>
             <View style={styles.cardHeader}>
                <IconButton icon="calendar-clock" size={20} iconColor={theme.colors.primary} />
@@ -222,6 +263,7 @@ export default function AddMedication({ onBack }) {
             <View style={styles.group}>
               <FormLabel label="Treatment Duration" />
               <SegmentedButtons
+                // FIXED HIGHLIGHT: form.isPermanent na ang basehan
                 value={form.isPermanent ? 'perm' : 'course'}
                 onValueChange={(val) => updateForm('isPermanent', val === 'perm')}
                 theme={{ colors: { secondaryContainer: theme.colors.primaryContainer, onSecondaryContainer: theme.colors.primary }}}
@@ -247,7 +289,8 @@ export default function AddMedication({ onBack }) {
             <View style={styles.group}>
               <FormLabel label="Frequency" />
               <SegmentedButtons
-                value={form.frequency}
+                // FIXED HIGHLIGHT: lowercase na ang form.frequency
+                value={['daily', 'hourly', 'interval'].includes(form.frequency) ? form.frequency : 'daily'}
                 onValueChange={(val) => {
                   updateForm('frequency', val);
                   updateForm('intervalValue', '1');
@@ -277,7 +320,6 @@ export default function AddMedication({ onBack }) {
             </View>
           </Surface>
 
-          {/* REMINDERS */}
           <Surface style={[styles.card, { backgroundColor: theme.colors.surface }]} elevation={1}>
             <View style={styles.cardHeader}>
                <IconButton icon="bell-ring-outline" size={20} iconColor={theme.colors.primary} />
@@ -313,7 +355,7 @@ export default function AddMedication({ onBack }) {
             contentStyle={{ height: 56 }}
             labelStyle={{ fontSize: 16, fontWeight: 'bold' }}
           >
-            Confirm & Save
+            {medicationId ? "Update Medication" : "Confirm & Save"}
           </Button>
 
           <StatusModal 
@@ -322,26 +364,34 @@ export default function AddMedication({ onBack }) {
             title={modalType === 'pastTime' ? "Invalid Time" : "Missing Info"}
             message={
               modalType === 'pastTime' 
-                ? "Reminders cannot be set in the past. We've adjusted it to the next minute for you." 
+                ? "Reminders cannot be set in the past." 
                 : "Please enter a medicine name and a valid dosage."
             }
             type="warning"
           />
 
-          <TimeSelector 
+          {/* Hanapin mo 'to sa bandang dulo ng MedicationForm.js */}
+            <TimeSelector 
             show={pickerVisible.time} 
             value={form.time} 
-            onInvalidTime={() => setTimeout(() => setModalType('pastTime'), 400)}
+            // PASO 1: Ipasa ang startDate para alam ng component kung "Today" ba ang chine-check
+            startDate={form.startDate} 
+            // PASO 2: Eto yung trigger para lumabas ang StatusModal mo
+            onInvalidTime={() => {
+                // Timeout para siguradong sarado na yung picker bago mag-pop up ang modal
+                setTimeout(() => setModalType('pastTime'), 400);
+            }}
             onChange={(e, date) => {
-              if(date) { 
+                if(date) { 
+                // Siguraduhin na ang date part ay galing pa rin sa form.startDate
                 const newDate = new Date(form.startDate);
-                newDate.setHours(date.getHours(), date.getMinutes());
+                newDate.setHours(date.getHours(), date.getMinutes(), 0, 0);
                 updateForm('time', newDate); 
-              }
-              togglePicker('time', false);
+                }
+                togglePicker('time', false);
             }}
             onCancel={() => togglePicker('time', false)}
-          />
+            />
           <DateSelector 
             show={pickerVisible.date}
             value={form.startDate}

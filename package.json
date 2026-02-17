@@ -31,5 +31,9 @@
     "realm": "^20.2.0",
     "victory-native": "^41.20.2"
   },
-  "private": true
+  "private": true,
+  "devDependencies": {
+    "@react-native-community/cli": "^20.1.1",
+    "@react-native/metro-config": "^0.84.0"
+  }
 }

@@ -1,222 +1,306 @@
+// src/screens/HomeScreen.js
 import React, { useState, useMemo } from 'react';
-import { View, StyleSheet, ScrollView, Alert, Animated } from 'react-native';
-import { Text, FAB, useTheme, Card, IconButton, Surface, Avatar, ProgressBar, Badge } from 'react-native-paper';
+import { View, StyleSheet, ScrollView, Alert, TouchableOpacity, StatusBar } from 'react-native';
+import { Text, FAB, useTheme, Card, IconButton, Surface, Avatar, ProgressBar, Button } from 'react-native-paper';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Swipeable, GestureHandlerRootView } from 'react-native-gesture-handler';
-
-// Realm Imports
 import { useRealm, useQuery } from '@realm/react';
+import * as Realm from 'realm';
+
+// Realm Models
 import { Medication, Profile, MedicationLog } from '../models/Schemas';
 
 // Components
-import AddMedication from './AddMedication';
+import MedicationForm from './MedicationForm';
+import MedicineCabinet from './MedicineCabinet';
 
 export default function HomeScreen() {
-  const [showAddMed, setShowAddMed] = useState(false);
-  
+  const [showForm, setShowForm] = useState(false);
+  const [editingId, setEditingId] = useState(null);
+  const [viewCabinet, setViewCabinet] = useState(false);
+
   const realm = useRealm();
   const theme = useTheme();
   const insets = useSafeAreaInsets();
 
-  // DYNAMIC DATA
-  const medications = useQuery(Medication);
+  // Queries
+  const allMedications = useQuery(Medication);
   const profiles = useQuery(Profile);
   const logs = useQuery(MedicationLog);
-  
+
   const mainProfile = useMemo(() => {
     return profiles.filtered('isMain == true')[0] || profiles[0];
   }, [profiles]);
 
-  // 1. DATE LOGIC (The "Walang date HAHAHA" fix)
-  const today = new Date().toLocaleDateString('en-PH', { 
-    weekday: 'long', 
-    month: 'short', 
-    day: 'numeric' 
+  const now = new Date();
+  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const tomorrowStart = new Date(todayStart.getTime() + 86400000);
+
+  const todayString = now.toLocaleDateString('en-PH', {
+    weekday: 'long',
+    month: 'short',
+    day: 'numeric',
   });
 
-  // 2. LOGIC: Calculate Progress
-  const stats = useMemo(() => {
-    const total = medications.length;
-    const taken = logs.filtered('status == "taken"').length; 
-    const progress = total > 0 ? taken / total : 0;
-    return { total, taken, progress };
-  }, [medications, logs]);
+  // Logic to filter today's medications
+  const todayMedications = useMemo(() => {
+    return allMedications.filter(med => {
+      if (!med.isActive) return false;
+      const start = new Date(med.startDate);
+      const startDay = new Date(start.getFullYear(), start.getMonth(), start.getDate());
+      if (startDay > todayStart) return false;
 
-  // 3. LOGIC: Find the Next Medication
-  const nextMed = useMemo(() => {
-    if (medications.length === 0) return null;
-    const now = new Date();
-    const sorted = [...medications].sort((a, b) => {
-      const timeA = new Date(a.reminderTime).setFullYear(now.getFullYear(), now.getMonth(), now.getDate());
-      const timeB = new Date(b.reminderTime).setFullYear(now.getFullYear(), now.getMonth(), now.getDate());
-      return timeA - timeB;
+      const matchesFrequency = () => {
+        if (med.frequency === 'daily') return true;
+        if (med.frequency === 'interval') {
+          const interval = Number(med.intervalValue) || 1;
+          const diffDays = Math.floor((todayStart.getTime() - startDay.getTime()) / 86400000);
+          return diffDays % interval === 0;
+        }
+        return true;
+      };
+
+      if (med.isPermanent) return matchesFrequency();
+      const durationDays = Number(med.duration) || 0;
+      const endDay = new Date(startDay);
+      endDay.setDate(endDay.getDate() + durationDays - 1);
+      return todayStart <= endDay && matchesFrequency();
     });
-    return sorted.find(m => {
-      const medTime = new Date(m.reminderTime);
-      return medTime.getHours() > now.getHours() || (medTime.getHours() === now.getHours() && medTime.getMinutes() > now.getMinutes());
-    }) || sorted[0];
-  }, [medications]);
+  }, [allMedications, todayStart]);
 
-  // ACTIONS
-  const handleTakeMedication = (med) => {
-    realm.write(() => {
-      realm.create('MedicationLog', {
-        _id: new Realm.BSON.UUID(),
-        medicationId: med._id,
-        medicationName: med.name,
-        takenAt: new Date(),
-        status: 'taken',
-      });
-
-      if (med.isInventoryEnabled && med.stock > 0) {
-        med.stock -= 1;
-      }
-    });
-
-    if (med.isInventoryEnabled && med.stock <= med.reorderLevel) {
-      Alert.alert("Low Stock", `Paubos na ang ${med.name}! (${med.stock} left)`);
-    }
+  const getDoseStatus = (med) => {
+    const dayLogs = logs.filtered(
+      'medicationId == $0 AND takenAt >= $1 AND takenAt < $2',
+      med._id,
+      todayStart,
+      tomorrowStart
+    );
+    if (dayLogs.length > 0) return dayLogs.sorted('takenAt', true)[0].status;
+    const reminder = new Date(med.reminderTime);
+    reminder.setFullYear(todayStart.getFullYear(), todayStart.getMonth(), todayStart.getDate());
+    return now > reminder ? 'missed' : 'pending';
   };
 
-  const deleteMed = (med) => {
-    Alert.alert("Delete", `Sigurado ka bang tatanggalin ang ${med.name}?`, [
-      { text: "Cancel", style: "cancel" },
-      { text: "Delete", style: "destructive", onPress: () => {
-        realm.write(() => { realm.delete(med); });
-      }}
-    ]);
+  const stats = useMemo(() => {
+    const total = todayMedications.length;
+    const takenToday = logs.filtered(
+      'status == "taken" AND takenAt >= $0 AND takenAt < $1',
+      todayStart,
+      tomorrowStart
+    ).length;
+    return {
+      total,
+      taken: takenToday,
+      progress: total > 0 ? takenToday / total : 0,
+      grandTotal: allMedications.length,
+    };
+  }, [todayMedications, logs, todayStart, tomorrowStart, allMedications]);
+
+  const nextMed = useMemo(() => {
+    const pending = todayMedications.filter(m => getDoseStatus(m) === 'pending');
+    if (pending.length === 0) return null;
+    const sorted = [...pending].sort((a, b) => {
+      const ta = new Date(a.reminderTime);
+      const tb = new Date(b.reminderTime);
+      return (ta.getHours() * 60 + ta.getMinutes()) - (tb.getHours() * 60 + tb.getMinutes());
+    });
+    const currentMin = now.getHours() * 60 + now.getMinutes();
+    return sorted.find(m => (new Date(m.reminderTime).getHours() * 60 + new Date(m.reminderTime).getMinutes()) > currentMin) || sorted[0];
+  }, [todayMedications, now]);
+
+  const handleTakeMedication = (med) => {
+    if (getDoseStatus(med) === 'taken') return;
+    try {
+      realm.write(() => {
+        realm.create('MedicationLog', {
+          _id: new Realm.BSON.UUID(),
+          medicationId: med._id,
+          status: 'taken',
+          takenAt: new Date(),
+        });
+        if (med.isInventoryEnabled && med.stock > 0) med.stock -= 1;
+      });
+      if (med.isInventoryEnabled && med.stock <= med.reorderLevel) {
+        Alert.alert('Low Stock', `Paubos na ang ${med.name}! (${med.stock} left)`);
+      }
+    } catch (error) {
+      console.error(error);
+    }
   };
 
   const renderRightActions = (med) => (
     <View style={styles.swipeActions}>
-      <IconButton 
-        icon="pencil" 
+      <IconButton
+        icon="pencil"
         mode="contained"
-        containerColor={theme.colors.primaryContainer}
-        iconColor={theme.colors.primary}
-        onPress={() => console.log('Edit', med.name)} 
+        containerColor={theme.colors.secondaryContainer}
+        iconColor={theme.colors.onSecondaryContainer}
+        onPress={() => {
+          setEditingId(med._id);
+          setShowForm(true);
+        }}
       />
-      <IconButton 
-        icon="delete" 
+      <IconButton
+        icon="delete"
         mode="contained"
-        containerColor="#FFEBEE"
-        iconColor={theme.colors.error}
-        onPress={() => deleteMed(med)} 
+        containerColor={theme.colors.errorContainer}
+        iconColor={theme.colors.onErrorContainer}
+        onPress={() => {
+          Alert.alert('Delete', `Remove ${med.name}?`, [
+            { text: 'Cancel', style: 'cancel' },
+            { text: 'Delete', style: 'destructive', onPress: () => realm.write(() => realm.delete(med)) },
+          ]);
+        }}
       />
     </View>
   );
 
-  const formatTime = (date) => {
-    if (!date) return "--:--";
-    return new Date(date).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: true });
-  };
+  const formatTime = (date) => new Date(date).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: true });
 
-  if (showAddMed) return <AddMedication onBack={() => setShowAddMed(false)} />;
+  // Navigation Rendering
+  if (showForm) {
+    return <MedicationForm onBack={() => { setShowForm(false); setEditingId(null); }} medicationId={editingId} />;
+  }
+if (viewCabinet) {
+  return (
+    <MedicineCabinet 
+      onBack={() => setViewCabinet(false)} 
+      // ETO ANG KULANG:
+      onEditMedication={(id) => {
+        setEditingId(id);    // I-set ang ID ng gamot na e-edit
+        setShowForm(true);   // Buksan ang MedicationForm
+        setViewCabinet(false); // Isara ang Cabinet view
+      }}
+    />
+  );
+}
 
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
       <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
+        <StatusBar barStyle={theme.dark ? "light-content" : "dark-content"} translucent backgroundColor="transparent" />
         
-        {/* TOP HEADER */}
         <View style={[styles.profileHeader, { paddingTop: insets.top + 10 }]}>
           <View>
-            <Text variant="labelLarge" style={{ color: theme.colors.secondary, letterSpacing: 1 }}>{today.toUpperCase()}</Text>
-            <Text variant="headlineSmall" style={styles.userName}>
+            <Text variant="labelLarge" style={{ color: theme.colors.secondary, letterSpacing: 1 }}>
+              {todayString.toUpperCase()}
+            </Text>
+            <Text variant="headlineSmall" style={[styles.userName, { color: theme.colors.onSurface }]}>
               Hi, {mainProfile?.firstName || 'User'}!
             </Text>
           </View>
-          <Avatar.Icon 
-            size={45} 
-            icon={mainProfile?.icon || "account"} 
-            style={{ backgroundColor: mainProfile?.color || theme.colors.primary }}
-            color="white"
+          <Avatar.Icon
+            size={45}
+            icon="account-heart"
+            style={{ backgroundColor: theme.colors.primaryContainer }}
+            color={theme.colors.primary}
           />
         </View>
 
-        <ScrollView 
-          contentContainerStyle={[styles.scrollContent, { paddingBottom: insets.bottom + 100 }]} 
+        <ScrollView
+          contentContainerStyle={[styles.scrollContent, { paddingBottom: insets.bottom + 100 }]}
           showsVerticalScrollIndicator={false}
         >
-          
-          {/* PROGRESS CARD */}
-          <Surface style={styles.statsCard} elevation={0}>
-            <View style={styles.statsRow}>
-              <View>
-                <Text variant="titleMedium" style={styles.statsTitle}>Daily Progress</Text>
-                <Text variant="bodySmall" style={{ color: theme.colors.secondary }}>
-                  {stats.taken} of {stats.total} taken today
-                </Text>
-              </View>
-              <Text variant="headlineSmall" style={{ color: theme.colors.primary, fontWeight: 'bold' }}>
+          <View style={styles.summaryRow}>
+            <Surface style={[styles.summaryCard, { flex: 1.5, backgroundColor: theme.colors.elevation.level1 }]} elevation={1}>
+              <Text variant="labelMedium" style={{ color: theme.colors.onSurfaceVariant }}>Today's Progress</Text>
+              <Text variant="headlineSmall" style={{ fontWeight: 'bold', color: theme.colors.onSurface }}>
                 {Math.round(stats.progress * 100)}%
               </Text>
-            </View>
-            <ProgressBar progress={stats.progress} color={theme.colors.primary} style={styles.progressBar} />
-          </Surface>
+              <ProgressBar
+                progress={stats.progress}
+                color={theme.colors.primary}
+                style={{ height: 6, borderRadius: 3, marginTop: 8 }}
+              />
+            </Surface>
 
-          {/* NEXT DOSE FOCUS */}
+            <TouchableOpacity style={{ flex: 1 }} onPress={() => setViewCabinet(true)}>
+              <Surface
+                style={[styles.summaryCard, { backgroundColor: theme.colors.secondaryContainer }]}
+                elevation={1}
+              >
+                <Text variant="labelMedium" style={{ color: theme.colors.onSecondaryContainer, opacity: 0.7 }}>Cabinet</Text>
+                <Text variant="headlineSmall" style={{ fontWeight: 'bold', color: theme.colors.onSecondaryContainer }}>
+                  {stats.grandTotal}
+                </Text>
+                <Text variant="bodySmall" style={{ color: theme.colors.onSecondaryContainer }}>View All →</Text>
+              </Surface>
+            </TouchableOpacity>
+          </View>
+
           {nextMed && (
             <View style={styles.section}>
-              <Text variant="titleMedium" style={styles.sectionLabel}>Next Medication</Text>
-              <Card style={[styles.nextCard, { backgroundColor: theme.colors.primaryContainer }]} mode="contained">
+              <Text variant="titleMedium" style={[styles.sectionLabel, { color: theme.colors.onSurface }]}>Next Dose</Text>
+              <Card style={{ borderRadius: 24, backgroundColor: theme.colors.primary }} mode="contained">
                 <Card.Content style={styles.nextCardContent}>
-                  <View style={styles.nextInfo}>
-                    <Text variant="labelLarge" style={{ color: theme.colors.primary }}>{formatTime(nextMed.reminderTime)}</Text>
-                    <Text variant="headlineSmall" style={styles.nextMedName}>{nextMed.name}</Text>
-                    <Text variant="bodyMedium">{nextMed.dosage} {nextMed.unit} • {nextMed.category}</Text>
+                  <View style={{ flex: 1 }}>
+                    <Text variant="labelLarge" style={{ color: theme.colors.onPrimary, opacity: 0.8 }}>
+                      {formatTime(nextMed.reminderTime)}
+                    </Text>
+                    <Text variant="headlineSmall" style={{ color: theme.colors.onPrimary, fontWeight: 'bold' }}>
+                      {nextMed.name}
+                    </Text>
+                    <Text variant="bodyMedium" style={{ color: theme.colors.onPrimary }}>
+                      {nextMed.dosage} {nextMed.unit} • {nextMed.category}
+                    </Text>
                   </View>
-                  <IconButton icon="bell-ring" mode="contained" containerColor={theme.colors.primary} iconColor="white" size={30} />
+                  <IconButton icon="clock-fast" containerColor={theme.colors.onPrimary} iconColor={theme.colors.primary} size={28} />
                 </Card.Content>
               </Card>
             </View>
           )}
 
-          {/* FULL SCHEDULE LIST */}
           <View style={styles.section}>
-            <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
-                <Text variant="titleMedium" style={styles.sectionLabel}>Today's Schedule</Text>
-                <Text variant="labelSmall" style={{ opacity: 0.5 }}>Swipe left to edit</Text>
-            </View>
-            
-            {medications.length === 0 ? (
-              <Text style={styles.emptyMsg}>Walang gamot sa listahan.</Text>
+            <Text variant="titleMedium" style={[styles.sectionLabel, { color: theme.colors.onSurface }]}>Today's Schedule</Text>
+
+            {todayMedications.length === 0 ? (
+              <Surface style={[styles.emptyCard, { backgroundColor: theme.colors.surfaceVariant, borderColor: theme.colors.outline }]} elevation={0}>
+                <IconButton icon="pill-off" size={40} style={{ opacity: 0.5 }} iconColor={theme.colors.onSurfaceVariant} />
+                <Text style={[styles.emptyMsg, { color: theme.colors.onSurfaceVariant }]}>No medications scheduled for today.</Text>
+                <Button mode="text" onPress={() => setShowForm(true)} textColor={theme.colors.primary}>Add Medicine</Button>
+              </Surface>
             ) : (
-              [...medications].sort((a,b) => new Date(a.reminderTime) - new Date(b.reminderTime)).map((med) => (
-                <Swipeable key={med._id.toString()} renderRightActions={() => renderRightActions(med)}>
-                  <Surface style={styles.medItem} elevation={0}>
-                    <View style={styles.timeLine}>
-                       <Text variant="labelMedium" style={styles.timeLabel}>{formatTime(med.reminderTime)}</Text>
-                    </View>
-                    <View style={styles.medDetails}>
-                      <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                        <Text variant="titleMedium" style={styles.medNameText}>{med.name}</Text>
-                        {med.isInventoryEnabled && med.stock <= med.reorderLevel && (
-                          <Badge size={8} style={{ marginLeft: 6, backgroundColor: theme.colors.error }} />
-                        )}
-                      </View>
-                      <Text variant="bodySmall" style={{ color: theme.colors.secondary }}>
-                        {med.dosage} {med.unit} • {med.isInventoryEnabled ? `${med.stock} left` : med.category}
-                      </Text>
-                    </View>
-                    <IconButton 
-                      icon="check-circle-outline" 
-                      iconColor={theme.colors.primary} 
-                      onPress={() => handleTakeMedication(med)}
-                    />
-                  </Surface>
-                </Swipeable>
-              ))
+              [...todayMedications]
+                .sort((a, b) => {
+                  const ta = new Date(a.reminderTime);
+                  const tb = new Date(b.reminderTime);
+                  return (ta.getHours() * 60 + ta.getMinutes()) - (tb.getHours() * 60 + tb.getMinutes());
+                })
+                .map((med) => {
+                  const status = getDoseStatus(med);
+                  const isTaken = status === 'taken';
+                  let icon = isTaken ? 'check-circle' : (status === 'missed' ? 'alert-circle' : 'checkbox-blank-circle-outline');
+                  let iconColor = isTaken ? theme.colors.primary : (status === 'missed' ? theme.colors.error : theme.colors.primary);
+
+                  return (
+                    <Swipeable key={med._id.toHexString()} renderRightActions={() => renderRightActions(med)}>
+                      <Surface 
+                        style={[styles.medItem, { backgroundColor: theme.colors.elevation.level1, borderColor: theme.colors.outlineVariant, opacity: isTaken ? 0.6 : 1 }]} 
+                        elevation={0}
+                      >
+                        <View style={styles.timeLine}>
+                          <Text variant="titleMedium" style={[styles.timeLabel, { color: theme.colors.onSurfaceVariant }]}>{formatTime(med.reminderTime)}</Text>
+                        </View>
+                        <View style={styles.medDetails}>
+                          <Text variant="titleMedium" style={[styles.medNameText, { color: theme.colors.onSurface, textDecorationLine: isTaken ? 'line-through' : 'none' }]}>{med.name}</Text>
+                          <Text variant="bodySmall" style={{ color: theme.colors.secondary }}>{med.dosage} {med.unit} • {med.isInventoryEnabled ? `${med.stock} left` : med.category}</Text>
+                        </View>
+                        <IconButton icon={icon} iconColor={iconColor} size={28} disabled={isTaken} onPress={() => handleTakeMedication(med)} />
+                      </Surface>
+                    </Swipeable>
+                  );
+                })
             )}
           </View>
         </ScrollView>
 
         <FAB
           icon="plus"
-          label="Add Medicine"
+          label="New Medicine"
           extended
           style={[styles.fab, { backgroundColor: theme.colors.primary, bottom: insets.bottom + 20 }]}
-          color="white"
-          onPress={() => setShowAddMed(true)} 
+          color={theme.colors.onPrimary}
+          onPress={() => { setEditingId(null); setShowForm(true); }}
         />
       </View>
     </GestureHandlerRootView>
@@ -225,25 +309,21 @@ export default function HomeScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
-  profileHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 20, marginBottom: 20 },
+  profileHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 20, marginBottom: 15 },
   userName: { fontWeight: 'bold' },
   scrollContent: { paddingHorizontal: 20 },
-  statsCard: { padding: 20, borderRadius: 24, backgroundColor: '#F7F9FB', marginBottom: 25, borderWidth: 1, borderColor: '#F0F0F0' },
-  statsRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 15 },
-  statsTitle: { fontWeight: 'bold' },
-  progressBar: { height: 8, borderRadius: 4 },
+  summaryRow: { flexDirection: 'row', gap: 12, marginBottom: 25 },
+  summaryCard: { padding: 16, borderRadius: 24, gap: 4 },
   section: { marginBottom: 25 },
-  sectionLabel: { marginBottom: 12, fontWeight: 'bold', opacity: 0.7 },
-  nextCard: { borderRadius: 24 },
-  nextCardContent: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  nextMedName: { fontWeight: 'bold', marginVertical: 2 },
-  nextInfo: { flex: 1 },
-  medItem: { flexDirection: 'row', alignItems: 'center', padding: 12, borderRadius: 20, backgroundColor: '#FFFFFF', marginBottom: 10, borderWidth: 1, borderColor: '#F0F0F0' },
-  timeLine: { width: 75 },
-  timeLabel: { fontWeight: 'bold', opacity: 0.6 },
+  sectionLabel: { marginBottom: 12, fontWeight: 'bold', opacity: 0.8 },
+  nextCardContent: { flexDirection: 'row', alignItems: 'center', paddingVertical: 8 },
+  medItem: { flexDirection: 'row', alignItems: 'center', padding: 12, borderRadius: 20, marginBottom: 10, borderWidth: 1 },
+  timeLine: { width: 85 },
+  timeLabel: { fontWeight: 'bold' },
   medDetails: { flex: 1 },
   medNameText: { fontWeight: 'bold' },
-  emptyMsg: { textAlign: 'center', opacity: 0.5, marginTop: 20 },
-  swipeActions: { flexDirection: 'row', alignItems: 'center', paddingLeft: 10, marginBottom: 10 },
-  fab: { position: 'absolute', right: 20, borderRadius: 16, elevation: 4 },
+  emptyCard: { padding: 30, alignItems: 'center', borderRadius: 24, borderStyle: 'dashed', borderWidth: 1 },
+  emptyMsg: { textAlign: 'center', marginBottom: 10 },
+  swipeActions: { flexDirection: 'row', alignItems: 'center', paddingLeft: 10, gap: 4 },
+  fab: { position: 'absolute', right: 20, borderRadius: 16 }
 });
