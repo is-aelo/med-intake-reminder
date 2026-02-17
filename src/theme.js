@@ -11,20 +11,27 @@ const fontConfig = {
 export const theme = {
   ...MD3LightTheme,
   fonts: configureFonts({ config: fontConfig }),
-  roundness: 16, // More rounded = more modern
+  roundness: 16,
   colors: {
     ...MD3LightTheme.colors,
-    primary: '#2D5A27',           // Forest Green (Deep but muted)
+    primary: '#2D5A27',           // Forest Green
     onPrimary: '#FFFFFF',
-    primaryContainer: '#E8F5E9',  // Very light mint (instead of heavy green)
+    primaryContainer: '#E8F5E9',  // Light Mint
     onPrimaryContainer: '#1B3217',
     
-    secondary: '#6A977D',         // Sage/Grey-Green (More sophisticated)
+    secondary: '#6A977D',         // Sage
+    onSecondary: '#FFFFFF',
+    secondaryContainer: '#F1F5F2', 
+    onSecondaryContainer: '#1D241F',
+
+    background: '#FFFFFF',
+    surface: '#F9FBF9',           
     
-    background: '#FFFFFF',        // Pure white for that clean look
-    surface: '#F9FBF9',           // Extremely subtle tint for cards
+    // OVERRIDING THE PURPLE TINTS:
+    surfaceVariant: '#F0F2F0',    // Light Grayish Green (dating purplish gray)
+    onSurfaceVariant: '#444944',  // Darker Gray-Green (dating brownish purple)
     
-    outline: '#E0E4E0',           // Very thin, light borders
+    outline: '#E0E4E0',           
     outlineVariant: '#F0F2F0',
     
     error: '#BA1A1A',

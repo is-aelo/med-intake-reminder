@@ -91,18 +91,18 @@ export default function AddMedication({ onBack }) {
       <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={{ flex: 1 }}>
         <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
           
-          {/* SECTION 1: MEDICINE INFO */}
+          {/* MEDICINE INFO */}
           <Surface style={[styles.card, { backgroundColor: theme.colors.surface }]} elevation={1}>
             <View style={styles.cardHeader}>
                <IconButton icon="pill" size={20} iconColor={theme.colors.primary} />
-               <Text variant="titleMedium" style={[styles.cardTitle, { color: theme.colors.onSurface }]}>Medicine Details</Text>
+               <Text variant="titleMedium" style={{ color: theme.colors.onSurface, fontWeight: 'bold' }}>Medicine Details</Text>
             </View>
             
             <View style={styles.group}>
               <FormLabel label="What is the medicine name?" />
               <ModernInput 
                 placeholder="e.g. Amoxicillin" 
-                placeholderTextColor={theme.colors.outline} // Gamit ang theme variable
+                placeholderTextColor={theme.colors.onSurfaceVariant} 
                 value={form.name} 
                 onChangeText={(val) => updateForm('name', val)} 
               />
@@ -113,7 +113,7 @@ export default function AddMedication({ onBack }) {
                 <FormLabel label="How much?" />
                 <ModernInput 
                   placeholder="0" 
-                  placeholderTextColor={theme.colors.outline}
+                  placeholderTextColor={theme.colors.onSurfaceVariant}
                   keyboardType="numeric" 
                   value={form.dosage} 
                   onChangeText={(val) => updateForm('dosage', val)} 
@@ -143,11 +143,11 @@ export default function AddMedication({ onBack }) {
             </View>
           </Surface>
 
-          {/* SECTION 2: SCHEDULE */}
+          {/* SCHEDULE */}
           <Surface style={[styles.card, { backgroundColor: theme.colors.surface }]} elevation={1}>
             <View style={styles.cardHeader}>
                <IconButton icon="calendar-clock" size={20} iconColor={theme.colors.primary} />
-               <Text variant="titleMedium" style={[styles.cardTitle, { color: theme.colors.onSurface }]}>Schedule</Text>
+               <Text variant="titleMedium" style={{ color: theme.colors.onSurface, fontWeight: 'bold' }}>Schedule</Text>
             </View>
 
             <View style={styles.group}>
@@ -155,6 +155,7 @@ export default function AddMedication({ onBack }) {
               <SegmentedButtons
                 value={form.isPermanent ? 'perm' : 'course'}
                 onValueChange={(val) => updateForm('isPermanent', val === 'perm')}
+                theme={{ colors: { secondaryContainer: theme.colors.primaryContainer, onSecondaryContainer: theme.colors.primary }}}
                 buttons={[
                   { value: 'perm', label: 'Long-term', icon: 'infinity' },
                   { value: 'course', label: 'Set Days', icon: 'calendar-check' },
@@ -165,7 +166,7 @@ export default function AddMedication({ onBack }) {
                   <FormLabel label="For how many days?" />
                   <ModernInput 
                     placeholder="e.g. 7" 
-                    placeholderTextColor={theme.colors.outline}
+                    placeholderTextColor={theme.colors.onSurfaceVariant}
                     keyboardType="numeric" 
                     value={form.duration} 
                     onChangeText={(val) => updateForm('duration', val)} 
@@ -182,6 +183,7 @@ export default function AddMedication({ onBack }) {
                   updateForm('frequency', val);
                   updateForm('intervalValue', '1');
                 }}
+                theme={{ colors: { secondaryContainer: theme.colors.primaryContainer, onSecondaryContainer: theme.colors.primary }}}
                 buttons={[
                   { value: 'daily', label: 'Daily' },
                   { value: 'hourly', label: 'Hourly' },
@@ -206,15 +208,15 @@ export default function AddMedication({ onBack }) {
             </View>
           </Surface>
 
-          {/* SECTION 3: REMINDERS */}
+          {/* REMINDERS */}
           <Surface style={[styles.card, { backgroundColor: theme.colors.surface }]} elevation={1}>
             <View style={styles.cardHeader}>
                <IconButton icon="bell-ring-outline" size={20} iconColor={theme.colors.primary} />
-               <Text variant="titleMedium" style={[styles.cardTitle, { color: theme.colors.onSurface }]}>Reminders</Text>
+               <Text variant="titleMedium" style={{ color: theme.colors.onSurface, fontWeight: 'bold' }}>Reminders</Text>
             </View>
 
             <View style={[styles.dateTimeContainer, { borderTopColor: theme.colors.outlineVariant }]}>
-               <TouchableRipple onPress={() => togglePicker('date', true)} style={styles.flex1}>
+               <TouchableRipple onPress={() => togglePicker('date', true)} style={styles.flex1} borderless>
                   <View style={styles.dateTimeBox}>
                      <Text variant="labelSmall" style={{ color: theme.colors.secondary }}>START DATE</Text>
                      <Text variant="bodyLarge" style={styles.boldText}>{formatDate(form.startDate)}</Text>
@@ -223,7 +225,7 @@ export default function AddMedication({ onBack }) {
                
                <View style={[styles.verticalDivider, { backgroundColor: theme.colors.outlineVariant }]} />
 
-               <TouchableRipple onPress={() => togglePicker('time', true)} style={styles.flex1}>
+               <TouchableRipple onPress={() => togglePicker('time', true)} style={styles.flex1} borderless>
                   <View style={styles.dateTimeBox}>
                      <Text variant="labelSmall" style={{ color: theme.colors.secondary }}>REMINDER TIME</Text>
                      <Text variant="bodyLarge" style={styles.boldText}>{formatTime(form.time)}</Text>
@@ -232,7 +234,7 @@ export default function AddMedication({ onBack }) {
             </View>
           </Surface>
 
-          {/* SUMMARY FEEDBACK */}
+          {/* SUMMARY BOX */}
           <View style={[styles.summaryBox, { backgroundColor: theme.colors.primaryContainer, borderColor: theme.colors.primary }]}>
               <View style={styles.summaryHeader}>
                 <IconButton icon="information" size={16} iconColor={theme.colors.primary} style={styles.noMargin} />
@@ -255,7 +257,7 @@ export default function AddMedication({ onBack }) {
             Confirm & Save
           </Button>
 
-          {/* MODALS & SELECTORS */}
+          {/* MODALS */}
           <StatusModal 
             visible={modalType !== null}
             onDismiss={() => setModalType(null)}
@@ -301,13 +303,12 @@ const styles = StyleSheet.create({
   scrollContent: { padding: 16, gap: 16 },
   card: { padding: 16, gap: 16, borderRadius: 20 },
   cardHeader: { flexDirection: 'row', alignItems: 'center', marginLeft: -12, marginBottom: -8 },
-  cardTitle: { fontWeight: 'bold', marginLeft: -8 },
   group: { gap: 8 },
   row: { flexDirection: 'row', gap: 12 },
   dynamicField: { marginTop: 4, gap: 8 },
   dateTimeContainer: { flexDirection: 'row', borderTopWidth: 1, paddingTop: 16, marginTop: 8 },
   flex1: { flex: 1 },
-  dateTimeBox: { alignItems: 'center', gap: 4 },
+  dateTimeBox: { alignItems: 'center', gap: 4, paddingVertical: 8 },
   verticalDivider: { width: 1 },
   boldText: { fontWeight: 'bold' },
   summaryBox: { padding: 12, borderRadius: 16, borderStyle: 'dashed', borderWidth: 1 },
