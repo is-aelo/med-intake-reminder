@@ -112,19 +112,35 @@ export default function HomeScreen() {
     if (getDoseStatus(med) === 'taken') return;
     try {
       realm.write(() => {
+        const currentTime = new Date();
+        
+        // Compute scheduled time for today
+        const scheduledDate = new Date(med.reminderTime);
+        scheduledDate.setFullYear(currentTime.getFullYear(), currentTime.getMonth(), currentTime.getDate());
+        
+        const delay = Math.round((currentTime - scheduledDate) / 60000);
+
         realm.create('MedicationLog', {
           _id: new Realm.BSON.UUID(),
           medicationId: med._id,
+          medicationName: med.name, // FIXED: Added missing required property
           status: 'taken',
-          takenAt: new Date(),
+          scheduledAt: scheduledDate,
+          takenAt: currentTime,
+          delayMinutes: delay,
         });
-        if (med.isInventoryEnabled && med.stock > 0) med.stock -= 1;
+
+        if (med.isInventoryEnabled && med.stock > 0) {
+          med.stock -= 1;
+        }
       });
+
       if (med.isInventoryEnabled && med.stock <= med.reorderLevel) {
         Alert.alert('Low Stock', `Paubos na ang ${med.name}! (${med.stock} left)`);
       }
     } catch (error) {
-      console.error(error);
+      console.error("HomeScreen Error:", error);
+      Alert.alert('Error', 'Hindi ma-save ang pag-inom ng gamot.');
     }
   };
 
@@ -157,23 +173,22 @@ export default function HomeScreen() {
 
   const formatTime = (date) => new Date(date).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: true });
 
-  // Navigation Rendering
   if (showForm) {
     return <MedicationForm onBack={() => { setShowForm(false); setEditingId(null); }} medicationId={editingId} />;
   }
-if (viewCabinet) {
-  return (
-    <MedicineCabinet 
-      onBack={() => setViewCabinet(false)} 
-      // ETO ANG KULANG:
-      onEditMedication={(id) => {
-        setEditingId(id);    // I-set ang ID ng gamot na e-edit
-        setShowForm(true);   // Buksan ang MedicationForm
-        setViewCabinet(false); // Isara ang Cabinet view
-      }}
-    />
-  );
-}
+
+  if (viewCabinet) {
+    return (
+      <MedicineCabinet 
+        onBack={() => setViewCabinet(false)} 
+        onEditMedication={(id) => {
+          setEditingId(id);
+          setShowForm(true);
+          setViewCabinet(false);
+        }}
+      />
+    );
+  }
 
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>

@@ -1,31 +1,40 @@
-// src/screens/MedicineCabinet.js
-import React from 'react';
-import { View, StyleSheet, FlatList, Alert } from 'react-native';
+import React, { useState } from 'react';
+import { View, StyleSheet, FlatList } from 'react-native';
 import { Text, IconButton, useTheme, Surface, Badge, TouchableRipple } from 'react-native-paper';
-import { useQuery, useRealm } from '@realm/react';
+import { useQuery } from '@realm/react';
 import { Medication } from '../models/Schemas';
+
+// Components
 import { ScreenHeader } from '../components/ScreenHeader';
+import { ConfirmationModal } from '../components/ConfirmationModal';
+
+// Hooks
+import { useMedicationActions } from '../hooks/useMedicationActions';
 
 export default function MedicineCabinet({ onBack, onEditMedication }) {
   const theme = useTheme();
-  const realm = useRealm();
   const allMeds = useQuery(Medication);
+  
+  // State management para sa deletion flow
+  const [selectedMed, setSelectedMed] = useState(null);
+  const [isDeleteVisible, setIsDeleteVisible] = useState(false);
 
-  const deleteMed = (med) => {
-    Alert.alert('Delete Medication', `Are you sure you want to remove ${med.name}?`, [
-      { text: 'Cancel', style: 'cancel' },
-      { 
-        text: 'Delete', 
-        style: 'destructive', 
-        onPress: () => realm.write(() => realm.delete(med)) 
-      },
-    ]);
+  // Gamitin ang ating centralized hook para sa deletion
+  const { deleteMedication } = useMedicationActions(() => {
+    // Callback: Anong gagawin kapag successful ang delete
+    setIsDeleteVisible(false);
+    setSelectedMed(null);
+  });
+
+  const handleOpenDelete = (med) => {
+    setSelectedMed(med);
+    setIsDeleteVisible(true);
   };
 
   const renderMedItem = ({ item }) => {
     const isLowStock = item.isInventoryEnabled && item.stock <= item.reorderLevel;
 
-    // Mapping colors based on theme.js constants
+    // Dynamic coloring based on status
     const statusBg = item.isActive 
       ? theme.colors.primaryContainer 
       : theme.colors.surfaceVariant;
@@ -39,7 +48,7 @@ export default function MedicineCabinet({ onBack, onEditMedication }) {
         style={[
           styles.medCard, 
           { 
-            backgroundColor: theme.colors.elevation.level1,
+            backgroundColor: theme.colors.elevation.level1, 
             borderColor: theme.colors.outlineVariant 
           }
         ]} 
@@ -51,12 +60,12 @@ export default function MedicineCabinet({ onBack, onEditMedication }) {
           style={{ borderRadius: 20 }}
         >
           <View style={styles.cardInner}>
-            {/* Left Icon Section */}
+            {/* Medication Icon */}
             <View style={[styles.iconContainer, { backgroundColor: theme.colors.secondaryContainer }]}>
               <IconButton icon="pill" iconColor={theme.colors.secondary} size={24} />
             </View>
 
-            {/* Middle Info Section */}
+            {/* Medicine Info */}
             <View style={styles.infoSection}>
               <Text variant="titleMedium" style={[styles.medName, { color: theme.colors.onSurface }]}>
                 {item.name}
@@ -67,14 +76,8 @@ export default function MedicineCabinet({ onBack, onEditMedication }) {
               
               <View style={styles.badgeRow}>
                 <Badge 
-                  visible={true}
-                  style={[
-                    styles.statusBadge, 
-                    { 
-                      backgroundColor: statusBg,
-                      color: statusTextColor,
-                    }
-                  ]}
+                  visible={true} 
+                  style={[styles.statusBadge, { backgroundColor: statusBg, color: statusTextColor }]}
                 >
                   {item.isActive ? 'Active' : 'Inactive'}
                 </Badge>
@@ -82,10 +85,10 @@ export default function MedicineCabinet({ onBack, onEditMedication }) {
                 {item.isInventoryEnabled && (
                   <Badge 
                     style={[
-                      styles.stockBadge,
+                      styles.stockBadge, 
                       { 
-                        backgroundColor: isLowStock ? theme.colors.errorContainer : theme.colors.primaryContainer,
-                        color: isLowStock ? theme.colors.onErrorContainer : theme.colors.primary
+                        backgroundColor: isLowStock ? theme.colors.errorContainer : theme.colors.primaryContainer, 
+                        color: isLowStock ? theme.colors.onErrorContainer : theme.colors.primary 
                       }
                     ]}
                   >
@@ -95,7 +98,7 @@ export default function MedicineCabinet({ onBack, onEditMedication }) {
               </View>
             </View>
 
-            {/* Right Actions Section (Horizontal) */}
+            {/* Action Buttons */}
             <View style={styles.actionSection}>
                <IconButton 
                 icon="pencil-outline" 
@@ -108,7 +111,7 @@ export default function MedicineCabinet({ onBack, onEditMedication }) {
                 icon="delete-outline" 
                 size={22} 
                 iconColor={theme.colors.error} 
-                onPress={() => deleteMed(item)} 
+                onPress={() => handleOpenDelete(item)} 
                 style={styles.actionBtn}
               />
             </View>
@@ -147,14 +150,36 @@ export default function MedicineCabinet({ onBack, onEditMedication }) {
           </View>
         }
       />
+
+      {/* ANG ATING PERSONALIZED CONFIRMATION MODAL */}
+      <ConfirmationModal 
+        visible={isDeleteVisible}
+        onDismiss={() => {
+          setIsDeleteVisible(false);
+          setSelectedMed(null);
+        }}
+        onConfirm={() => deleteMedication(selectedMed)}
+        title="Delete Medication?"
+        message={`Are you sure you want to remove ${selectedMed?.name}? Mawawala ang lahat ng schedules at inventory history nito.`}
+        confirmLabel="Confirm Delete"
+        icon="trash-can-alert"
+      />
     </View>
   );
 }
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
-  headerLabel: { marginHorizontal: 20, marginBottom: 16, marginTop: 12, letterSpacing: 1.2 },
-  listContent: { paddingHorizontal: 16, paddingBottom: 100 },
+  headerLabel: { 
+    marginHorizontal: 20, 
+    marginBottom: 16, 
+    marginTop: 12, 
+    letterSpacing: 1.2 
+  },
+  listContent: { 
+    paddingHorizontal: 16, 
+    paddingBottom: 100 
+  },
   medCard: { 
     marginBottom: 12, 
     borderRadius: 20, 

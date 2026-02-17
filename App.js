@@ -1,27 +1,24 @@
-// 1. DAPAT NASA PINAKATAAS 'TO - Rule #1 ng Gesture Handler
-import 'react-native-gesture-handler'; 
-
+import 'react-native-gesture-handler';
 import React, { useState, createContext, useMemo, useEffect } from 'react';
-import { Platform, StatusBar, View } from 'react-native';
+import { Platform, StatusBar, View, Alert } from 'react-native';
 import { PaperProvider, FAB, Portal } from 'react-native-paper';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { useFonts } from 'expo-font';
 import { registerTranslation } from 'react-native-paper-dates';
 
-// Notification Import
 import * as Notifications from 'expo-notifications';
+import notifee, { EventType, AuthorizationStatus } from '@notifee/react-native';
+import { RealmProvider, useQuery, useRealm } from '@realm/react';
+import * as Realm from 'realm';
 
-// Realm Imports
-import { RealmProvider, useQuery } from '@realm/react';
 import { Medication, Profile, MedicationLog } from './src/models/Schemas';
-
-// Theme and Screen Imports
 import { lightTheme, darkTheme } from './src/theme';
+import NotificationService from './src/services/NotificationService';
+
 import HomeScreen from './src/screens/HomeScreen';
 import WelcomeScreen from './src/screens/WelcomeScreen';
 import AddProfileScreen from './src/screens/AddProfileScreen';
 
-// Notification Configuration - Paano sasagot ang app sa alarm
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
     shouldShowAlert: true,
@@ -40,30 +37,85 @@ registerTranslation('en', {
   selectSingle: 'Select date',
   selectMultiple: 'Select dates',
   selectRange: 'Select period',
-  type: 'Type',
-  clear: 'Clear',
   today: 'Today',
-  disabled: 'Disabled',
   confirm: 'Confirm',
   cancel: 'Cancel',
   close: 'Close',
 });
 
 function AppContent() {
+  const realm = useRealm();
   const profiles = useQuery(Profile);
   const [isDarkMode, setIsDarkMode] = useState(false);
   const [hasStartedOnboarding, setHasStartedOnboarding] = useState(false);
 
-  // LOGIC: Request Notification Permissions on Startup
   useEffect(() => {
-    async function requestPermissions() {
-      const { status } = await Notifications.requestPermissionsAsync();
-      if (status !== 'granted') {
-        console.log('Notification permission denied!');
+    async function initializeNotifications() {
+      // 1. Check current permission status
+      const settings = await notifee.getNotificationSettings();
+
+      // 2. Force request if not determined or denied
+      if (settings.authorizationStatus === AuthorizationStatus.NOT_DETERMINED) {
+        await notifee.requestPermission();
       }
+
+      // 3. Always bootstrap to ensure the Sound Channel exists in System Settings
+      await NotificationService.bootstrap();
+
+      // 4. Handle button interactions
+      const unsubscribe = notifee.onForegroundEvent(async ({ type, detail }) => {
+        const { notification, pressAction } = detail;
+
+        if (type === EventType.ACTION_PRESS) {
+          if (pressAction.id === 'taken') {
+            handleMarkAsTaken(notification);
+          } else if (pressAction.id === 'snooze') {
+            await NotificationService.snoozeMedication(notification);
+          }
+        }
+      });
+
+      return unsubscribe;
     }
-    requestPermissions();
+
+    const netListener = initializeNotifications();
+    return () => {
+      netListener.then(unsubscribe => unsubscribe && unsubscribe());
+    };
   }, []);
+
+  const handleMarkAsTaken = (notification) => {
+    const { medicationId, scheduledAt } = notification.data;
+
+    try {
+      const medUuid = new Realm.BSON.UUID(medicationId);
+      const medication = realm.objectForPrimaryKey('Medication', medUuid);
+
+      realm.write(() => {
+        const now = new Date();
+        const scheduledDate = new Date(scheduledAt);
+        const delay = Math.round((now - scheduledDate) / 60000);
+
+        realm.create('MedicationLog', {
+          _id: new Realm.BSON.UUID(),
+          medicationId: medUuid,
+          medicationName: medication ? medication.name : 'Unknown Medication',
+          status: 'taken',
+          scheduledAt: scheduledDate,
+          takenAt: now,
+          delayMinutes: delay,
+        });
+
+        if (medication && medication.isInventoryEnabled && medication.stock > 0) {
+          medication.stock -= 1;
+        }
+      });
+    } catch (error) {
+      console.error('[App] Failed to log medication:', error);
+    } finally {
+      notifee.cancelNotification(notification.id);
+    }
+  };
 
   const themeContextValue = useMemo(() => ({
     toggleTheme: () => setIsDarkMode(prev => !prev),
@@ -73,11 +125,7 @@ function AppContent() {
   const activeTheme = isDarkMode ? darkTheme : lightTheme;
 
   const renderStack = () => {
-    // Kung may profile na sa Realm, diretso sa Home
-    if (profiles && profiles.length > 0) {
-      return <HomeScreen />;
-    }
-    // Kung wala pa, tingnan kung nasa Welcome screen o nasa Add Profile
+    if (profiles && profiles.length > 0) return <HomeScreen />;
     if (!hasStartedOnboarding) {
       return <WelcomeScreen onStart={() => setHasStartedOnboarding(true)} />;
     }
@@ -88,17 +136,14 @@ function AppContent() {
     <ThemeContext.Provider value={themeContextValue}>
       <PaperProvider theme={activeTheme}>
         <View style={{ flex: 1, backgroundColor: activeTheme.colors.background }}>
-          {/* StatusBar setup para sa modern look */}
           <StatusBar 
             barStyle={isDarkMode ? 'light-content' : 'dark-content'} 
             backgroundColor="transparent" 
             translucent 
           />
-          
           {renderStack()}
         </View>
 
-        {/* Theme Toggle Button - Floating style */}
         <Portal>
           <FAB
             icon={isDarkMode ? 'weather-sunny' : 'weather-night'}
@@ -134,10 +179,6 @@ export default function App() {
 
   return (
     <SafeAreaProvider>
-      {/* REALM CONFIGURATION:
-          schemaVersion: 2 - Sinasabi sa Realm na nagbago ang structure (inventory fields).
-          deleteRealmIfMigrationNeeded: true - Buburahin ang lumang data para hindi mag-error.
-      */}
       <RealmProvider 
         schema={[Medication, Profile, MedicationLog]}
         schemaVersion={2}
