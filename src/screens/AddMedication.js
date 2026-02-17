@@ -1,6 +1,6 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { View, StyleSheet, ScrollView, KeyboardAvoidingView, Platform, StatusBar } from 'react-native';
-import { Text, Button, useTheme, IconButton, TouchableRipple, SegmentedButtons } from 'react-native-paper';
+import { Text, Button, useTheme, IconButton, TouchableRipple, SegmentedButtons, Surface } from 'react-native-paper';
 
 import { FormLabel, ModernInput } from '../components/FormInput';
 import { SelectionMenu } from '../components/SelectionMenu';
@@ -19,75 +19,90 @@ export default function AddMedication({ onBack }) {
     isPermanent: true, 
     duration: '7',     
     frequency: 'daily', 
-    intervalValue: '8', 
+    intervalValue: '1', 
     startDate: new Date(), 
     time: new Date(),
   });
 
-  const [menuVisible, setMenuVisible] = useState({ unit: false, category: false });
+  const [menuVisible, setMenuVisible] = useState({ unit: false, category: false, interval: false });
   const [pickerVisible, setPickerVisible] = useState({ time: false, date: false });
-  const [isPastTimeModalVisible, setPastTimeModalVisible] = useState(false);
+  const [modalType, setModalType] = useState(null); 
 
   const units = ['mg', 'mcg', 'g', 'ml', 'IU', 'Drops', 'Puffs', 'Pills', 'Capsules', 'Sachets', 'Units'];
   const categories = ['Tablet', 'Capsule', 'Liquid/Syrup', 'Injection', 'Cream/Ointment', 'Inhaler', 'Drops', 'Spray', 'Patch', 'Suppository', 'Powder'];
+  const hourlyOptions = ['1', '2', '3', '4', '6', '8', '12', '24'];
+  const dayOptions = ['1', '2', '3', '4', '5', '6', '7', '14', '30'];
+
+  useEffect(() => {
+    if (!form.isPermanent && form.frequency === 'interval') {
+      const durationNum = parseInt(form.duration) || 0;
+      const intervalNum = parseInt(form.intervalValue) || 0;
+      if (intervalNum > durationNum && durationNum > 0) {
+        updateForm('intervalValue', '1');
+      }
+    }
+  }, [form.duration, form.isPermanent]);
 
   const updateForm = (key, value) => setForm(prev => ({ ...prev, [key]: value }));
   const toggleMenu = (key, isOpen) => setMenuVisible(prev => ({ ...prev, [key]: isOpen }));
   const togglePicker = (key, isOpen) => setPickerVisible(prev => ({ ...prev, [key]: isOpen }));
 
   const formatTime = (date) => date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: true });
-  const formatDate = (date) => date.toLocaleDateString([], { month: 'long', day: 'numeric', year: 'numeric' });
+  const formatDate = (date) => date.toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' });
+
+  const getFilteredOptions = () => {
+    if (form.frequency === 'hourly') return hourlyOptions;
+    if (form.frequency === 'interval' && !form.isPermanent) {
+      const maxDays = parseInt(form.duration) || 1;
+      return dayOptions.filter(opt => parseInt(opt) <= maxDays);
+    }
+    return dayOptions;
+  };
 
   const getScheduleSummary = () => {
     const { frequency, intervalValue, isPermanent, duration, category, startDate } = form;
     let text = `Take ${category.toLowerCase()} `;
     if (frequency === 'daily') text += "once every day";
     else if (frequency === 'hourly') text += `every ${intervalValue} hours`;
-    else if (frequency === 'interval') text += `every ${intervalValue} days`;
+    else if (frequency === 'interval') text += `every ${intervalValue} ${parseInt(intervalValue) === 1 ? 'day' : 'days'}`;
 
     text += ` starting ${formatDate(startDate)}`;
-
     if (!isPermanent) text += ` for a ${duration}-day course.`;
     else text += " as part of your regular maintenance.";
     
     return text;
   };
 
-  // FIXED: Update both date and time together
-  const handleDateChange = (newDate) => {
-    // When date changes, preserve the current time
-    const updatedDateTime = new Date(newDate);
-    updatedDateTime.setHours(form.time.getHours());
-    updatedDateTime.setMinutes(form.time.getMinutes());
-    
-    updateForm('startDate', updatedDateTime);
-    updateForm('time', updatedDateTime);
+  const handleSave = () => {
+    const isNameEmpty = form.name.trim() === '';
+    const isDosageInvalid = !form.dosage || parseFloat(form.dosage) <= 0;
+    if (isNameEmpty || isDosageInvalid) {
+      setModalType('emptyFields');
+      return;
+    }
+    console.log('✅ READY FOR REALM:', form);
   };
-
-  const handleTimeChange = (e, newDateTime) => {
-  if (newDateTime) {
-    // Update both startDate and time to keep them in sync
-    updateForm('startDate', newDateTime);
-    updateForm('time', newDateTime);
-  }
-  togglePicker('time', false);
-};
 
   return (
     <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
       <StatusBar barStyle="dark-content" backgroundColor="transparent" translucent />
-      <ScreenHeader title="Add Medication" onBack={onBack} />
+      <ScreenHeader title="New Medication" onBack={onBack} />
 
       <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={{ flex: 1 }}>
         <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
           
-          <View style={styles.formSection}>
+          {/* SECTION 1: MEDICINE INFO */}
+          <Surface style={[styles.card, { backgroundColor: theme.colors.surface }]} elevation={1}>
+            <View style={styles.cardHeader}>
+               <IconButton icon="pill" size={20} iconColor={theme.colors.primary} />
+               <Text variant="titleMedium" style={[styles.cardTitle, { color: theme.colors.onSurface }]}>Medicine Details</Text>
+            </View>
             
-            {/* STEP 1: Basic Info */}
             <View style={styles.group}>
               <FormLabel label="What is the medicine name?" />
               <ModernInput 
                 placeholder="e.g. Amoxicillin" 
+                placeholderTextColor={theme.colors.outline} // Gamit ang theme variable
                 value={form.name} 
                 onChangeText={(val) => updateForm('name', val)} 
               />
@@ -98,6 +113,7 @@ export default function AddMedication({ onBack }) {
                 <FormLabel label="How much?" />
                 <ModernInput 
                   placeholder="0" 
+                  placeholderTextColor={theme.colors.outline}
                   keyboardType="numeric" 
                   value={form.dosage} 
                   onChangeText={(val) => updateForm('dosage', val)} 
@@ -125,24 +141,15 @@ export default function AddMedication({ onBack }) {
                 options={categories}
               />
             </View>
+          </Surface>
 
-            <View style={styles.divider} />
-
-            {/* STEP 2: Start Date Selection */}
-            <View style={styles.group}>
-              <FormLabel label="When will you start taking this?" />
-              <TouchableRipple
-                onPress={() => togglePicker('date', true)}
-                style={[styles.selectorCard, { backgroundColor: theme.colors.surfaceVariant }]}
-              >
-                <View style={styles.selectorContent}>
-                  <Text variant="bodyLarge" style={{ fontWeight: '500' }}>{formatDate(form.startDate)}</Text>
-                  <IconButton icon="calendar-edit" size={24} />
-                </View>
-              </TouchableRipple>
+          {/* SECTION 2: SCHEDULE */}
+          <Surface style={[styles.card, { backgroundColor: theme.colors.surface }]} elevation={1}>
+            <View style={styles.cardHeader}>
+               <IconButton icon="calendar-clock" size={20} iconColor={theme.colors.primary} />
+               <Text variant="titleMedium" style={[styles.cardTitle, { color: theme.colors.onSurface }]}>Schedule</Text>
             </View>
 
-            {/* STEP 3: Duration */}
             <View style={styles.group}>
               <FormLabel label="How long will you take this?" />
               <SegmentedButtons
@@ -158,6 +165,7 @@ export default function AddMedication({ onBack }) {
                   <FormLabel label="For how many days?" />
                   <ModernInput 
                     placeholder="e.g. 7" 
+                    placeholderTextColor={theme.colors.outline}
                     keyboardType="numeric" 
                     value={form.duration} 
                     onChangeText={(val) => updateForm('duration', val)} 
@@ -166,89 +174,119 @@ export default function AddMedication({ onBack }) {
               )}
             </View>
 
-            {/* STEP 4: Frequency */}
             <View style={styles.group}>
-              <FormLabel label="How often do you take it?" />
+              <FormLabel label="Frequency" />
               <SegmentedButtons
                 value={form.frequency}
-                onValueChange={(val) => updateForm('frequency', val)}
+                onValueChange={(val) => {
+                  updateForm('frequency', val);
+                  updateForm('intervalValue', '1');
+                }}
                 buttons={[
-                  { value: 'daily', label: 'Daily', icon: 'calendar-today' },
-                  { value: 'hourly', label: 'Hourly', icon: 'clock-outline' },
-                  { value: 'interval', label: 'Days', icon: 'calendar-range' },
+                  { value: 'daily', label: 'Daily' },
+                  { value: 'hourly', label: 'Hourly' },
+                  { value: 'interval', label: 'Days' },
                 ]}
               />
               {form.frequency !== 'daily' && (
                 <View style={styles.dynamicField}>
                   <FormLabel label={form.frequency === 'hourly' ? "Every how many hours?" : "Every how many days?"} />
-                  <ModernInput 
-                    placeholder="e.g. 8" 
-                    keyboardType="numeric" 
-                    value={form.intervalValue} 
-                    onChangeText={(val) => updateForm('intervalValue', val)} 
+                  <SelectionMenu 
+                    visible={menuVisible.interval}
+                    onOpen={() => toggleMenu('interval', true)}
+                    onDismiss={(val) => { 
+                      toggleMenu('interval', false); 
+                      if(val) updateForm('intervalValue', val); 
+                    }}
+                    value={form.intervalValue}
+                    options={getFilteredOptions()}
                   />
                 </View>
               )}
             </View>
+          </Surface>
 
-            {/* STEP 5: Time Selection */}
-            <View style={styles.group}>
-              <FormLabel label={form.frequency === 'hourly' ? "When is the first dose?" : "Set reminder time"} />
-              <TouchableRipple
-                onPress={() => togglePicker('time', true)}
-                style={[styles.timeCard, { backgroundColor: theme.colors.primaryContainer, borderRadius: 16 }]}
-              >
-                <View style={styles.timeCardContent}>
-                  <View>
-                    <Text variant="displaySmall" style={{ color: theme.colors.primary }}>{formatTime(form.time)}</Text>
-                    <Text variant="bodyMedium" style={{ color: theme.colors.primary, opacity: 0.7 }}>Tap to change time</Text>
+          {/* SECTION 3: REMINDERS */}
+          <Surface style={[styles.card, { backgroundColor: theme.colors.surface }]} elevation={1}>
+            <View style={styles.cardHeader}>
+               <IconButton icon="bell-ring-outline" size={20} iconColor={theme.colors.primary} />
+               <Text variant="titleMedium" style={[styles.cardTitle, { color: theme.colors.onSurface }]}>Reminders</Text>
+            </View>
+
+            <View style={[styles.dateTimeContainer, { borderTopColor: theme.colors.outlineVariant }]}>
+               <TouchableRipple onPress={() => togglePicker('date', true)} style={styles.flex1}>
+                  <View style={styles.dateTimeBox}>
+                     <Text variant="labelSmall" style={{ color: theme.colors.secondary }}>START DATE</Text>
+                     <Text variant="bodyLarge" style={styles.boldText}>{formatDate(form.startDate)}</Text>
                   </View>
-                  <IconButton icon="clock-edit-outline" iconColor={theme.colors.primary} size={40} />
-                </View>
-              </TouchableRipple>
-            </View>
+               </TouchableRipple>
+               
+               <View style={[styles.verticalDivider, { backgroundColor: theme.colors.outlineVariant }]} />
 
-            {/* Summary Preview */}
-            <View style={[styles.summary, { backgroundColor: theme.colors.secondaryContainer }]}>
-              <IconButton icon="information-outline" size={20} />
-              <Text variant="bodyMedium" style={{ flex: 1, fontWeight: '500' }}>{getScheduleSummary()}</Text>
+               <TouchableRipple onPress={() => togglePicker('time', true)} style={styles.flex1}>
+                  <View style={styles.dateTimeBox}>
+                     <Text variant="labelSmall" style={{ color: theme.colors.secondary }}>REMINDER TIME</Text>
+                     <Text variant="bodyLarge" style={styles.boldText}>{formatTime(form.time)}</Text>
+                  </View>
+               </TouchableRipple>
             </View>
+          </Surface>
 
+          {/* SUMMARY FEEDBACK */}
+          <View style={[styles.summaryBox, { backgroundColor: theme.colors.primaryContainer, borderColor: theme.colors.primary }]}>
+              <View style={styles.summaryHeader}>
+                <IconButton icon="information" size={16} iconColor={theme.colors.primary} style={styles.noMargin} />
+                <Text variant="labelMedium" style={{ color: theme.colors.primary, fontWeight: 'bold' }}>
+                  SCHEDULE SUMMARY
+                </Text>
+              </View>
+              <Text variant="bodyMedium" style={{ color: theme.colors.onPrimaryContainer, lineHeight: 20 }}>
+                {getScheduleSummary()}
+              </Text>
           </View>
 
           <Button 
             mode="contained" 
-            onPress={() => console.log('Final Data Ready for Realm:', form)} 
-            style={styles.saveButton} 
+            onPress={handleSave} 
+            style={[styles.saveButton, { borderRadius: theme.roundness }]}
             contentStyle={{ height: 56 }}
+            labelStyle={{ fontSize: 16, fontWeight: 'bold' }}
           >
             Confirm & Save
           </Button>
 
-          {/* Validation Modal */}
+          {/* MODALS & SELECTORS */}
           <StatusModal 
-            visible={isPastTimeModalVisible}
-            onDismiss={() => setPastTimeModalVisible(false)}
-            title="Invalid Time"
-            message="Reminders cannot be set in the past. We've adjusted it to the next minute for you."
+            visible={modalType !== null}
+            onDismiss={() => setModalType(null)}
+            title={modalType === 'pastTime' ? "Invalid Time" : "Missing Info"}
+            message={
+              modalType === 'pastTime' ? "Reminders cannot be set in the past. We've adjusted it to the next minute for you." : "Please enter a medicine name and a valid dosage."
+            }
             type="warning"
           />
 
           <TimeSelector 
             show={pickerVisible.time} 
             value={form.time} 
-            onInvalidTime={() => {
-              console.log("Triggering Modal..."); // Debug line
-              setPastTimeModalVisible(true);
+            onInvalidTime={() => setTimeout(() => setModalType('pastTime'), 400)}
+            onChange={(e, date) => {
+              if(date) { updateForm('startDate', date); updateForm('time', date); }
+              togglePicker('time', false);
             }}
-            onChange={handleTimeChange}
             onCancel={() => togglePicker('time', false)}
           />
           
           <DateSelector 
             show={pickerVisible.date}
             value={form.startDate}
-            onChange={handleDateChange}
+            onChange={(date) => {
+              const updated = new Date(date);
+              updated.setHours(form.time.getHours(), form.time.getMinutes());
+              updateForm('startDate', updated);
+              updateForm('time', updated);
+              togglePicker('date', false);
+            }}
             onCancel={() => togglePicker('date', false)}
           />
 
@@ -260,16 +298,20 @@ export default function AddMedication({ onBack }) {
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
-  scrollContent: { padding: 20, paddingTop: 10 },
-  formSection: { gap: 24, marginBottom: 20 },
+  scrollContent: { padding: 16, gap: 16 },
+  card: { padding: 16, gap: 16, borderRadius: 20 },
+  cardHeader: { flexDirection: 'row', alignItems: 'center', marginLeft: -12, marginBottom: -8 },
+  cardTitle: { fontWeight: 'bold', marginLeft: -8 },
   group: { gap: 8 },
   row: { flexDirection: 'row', gap: 12 },
-  dynamicField: { marginTop: 4 },
-  divider: { height: 1, backgroundColor: 'rgba(0,0,0,0.05)', marginVertical: 10 },
-  selectorCard: { paddingHorizontal: 16, paddingVertical: 4, borderRadius: 12 },
-  selectorContent: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  timeCard: { padding: 20 },
-  timeCardContent: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  summary: { flexDirection: 'row', alignItems: 'center', padding: 12, borderRadius: 12, marginTop: 10 },
-  saveButton: { marginTop: 20, marginBottom: 50, borderRadius: 12 },
+  dynamicField: { marginTop: 4, gap: 8 },
+  dateTimeContainer: { flexDirection: 'row', borderTopWidth: 1, paddingTop: 16, marginTop: 8 },
+  flex1: { flex: 1 },
+  dateTimeBox: { alignItems: 'center', gap: 4 },
+  verticalDivider: { width: 1 },
+  boldText: { fontWeight: 'bold' },
+  summaryBox: { padding: 12, borderRadius: 16, borderStyle: 'dashed', borderWidth: 1 },
+  summaryHeader: { flexDirection: 'row', alignItems: 'center', marginBottom: 4 },
+  noMargin: { margin: 0 },
+  saveButton: { marginTop: 8, marginBottom: 50 },
 });
