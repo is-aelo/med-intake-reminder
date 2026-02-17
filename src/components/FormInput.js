@@ -37,6 +37,12 @@ export const ModernInput = (props) => {
       mode="flat"
       underlineColor="transparent"
       activeUnderlineColor={theme.colors.primary}
+      
+      // FIX PARA SA "LUHA" AT HIGHLIGHT:
+      cursorColor={theme.colors.primary} // Ang blinking bar
+      selectionColor={theme.colors.primaryContainer} // Ang highlight box kapag nag-select ng text
+      selectionHandleColor={theme.colors.primary} // Ang "luha" handle (Android)
+
       // Pass all standard TextInput props (placeholder, value, onChangeText, etc.)
       style={[
         styles.modernInput, 

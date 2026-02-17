@@ -14,7 +14,7 @@ export class MedicationLog extends Realm.Object {
   };
 }
 
-// 2. MEDICATION: The specific medicine details
+// 2. MEDICATION: Updated with Inventory Fields
 export class Medication extends Realm.Object {
   static schema = {
     name: 'Medication',
@@ -23,7 +23,7 @@ export class Medication extends Realm.Object {
       _id: 'uuid',
       name: 'string',
       dosage: 'string',
-      unit: 'string',
+      unit: 'string', // e.g., 'tablets', 'capsules', 'ml'
       category: 'string',
       isPermanent: 'bool',
       duration: 'string?',
@@ -33,6 +33,12 @@ export class Medication extends Realm.Object {
       reminderTime: 'date',
       createdAt: 'date',
       isActive: { type: 'bool', default: true },
+      
+      // --- INVENTORY FIELDS ---
+      stock: { type: 'int', default: 0 },         // Current available quantity
+      reorderLevel: { type: 'int', default: 5 },  // Alert user when stock hits this
+      isInventoryEnabled: { type: 'bool', default: false }, // Toggle for inventory tracking
+      
       owner: { 
         type: 'linkingObjects', 
         objectType: 'Profile', 
@@ -42,7 +48,7 @@ export class Medication extends Realm.Object {
   };
 }
 
-// 3. PROFILE: The "Person" (The 3-5 users)
+// 3. PROFILE: The "Person"
 export class Profile extends Realm.Object {
   static schema = {
     name: 'Profile',
@@ -50,9 +56,9 @@ export class Profile extends Realm.Object {
     properties: {
       _id: 'uuid',
       firstName: 'string',
-      relationship: 'string', // e.g., 'Self', 'Mother', 'Child'
-      color: 'string',        // Hex code (e.g., '#2D5A27')
-      icon: 'string',         // Icon name (e.g., 'account', 'baby-face', 'human-old')
+      relationship: 'string',
+      color: 'string',
+      icon: 'string',
       isMain: { type: 'bool', default: false },
       medications: 'Medication[]', 
     },

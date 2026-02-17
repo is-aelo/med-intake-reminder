@@ -1,9 +1,15 @@
-import React, { useState, createContext, useMemo } from 'react';
-import { Platform, StatusBar } from 'react-native';
+// 1. DAPAT NASA PINAKATAAS 'TO - Rule #1 ng Gesture Handler
+import 'react-native-gesture-handler'; 
+
+import React, { useState, createContext, useMemo, useEffect } from 'react';
+import { Platform, StatusBar, View } from 'react-native';
 import { PaperProvider, FAB, Portal } from 'react-native-paper';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { useFonts } from 'expo-font';
 import { registerTranslation } from 'react-native-paper-dates';
+
+// Notification Import
+import * as Notifications from 'expo-notifications';
 
 // Realm Imports
 import { RealmProvider, useQuery } from '@realm/react';
@@ -15,13 +21,20 @@ import HomeScreen from './src/screens/HomeScreen';
 import WelcomeScreen from './src/screens/WelcomeScreen';
 import AddProfileScreen from './src/screens/AddProfileScreen';
 
-// Context for global theme toggling
+// Notification Configuration - Paano sasagot ang app sa alarm
+Notifications.setNotificationHandler({
+  handleNotification: async () => ({
+    shouldShowAlert: true,
+    shouldPlaySound: true,
+    shouldSetBadge: true,
+  }),
+});
+
 export const ThemeContext = createContext({
   toggleTheme: () => {},
   isDarkMode: false,
 });
 
-// Initialize date picker translations
 registerTranslation('en', {
   save: 'Save',
   selectSingle: 'Select date',
@@ -39,9 +52,18 @@ registerTranslation('en', {
 function AppContent() {
   const profiles = useQuery(Profile);
   const [isDarkMode, setIsDarkMode] = useState(false);
-  
-  // Local state to handle the transition from Welcome to Profile Creation
   const [hasStartedOnboarding, setHasStartedOnboarding] = useState(false);
+
+  // LOGIC: Request Notification Permissions on Startup
+  useEffect(() => {
+    async function requestPermissions() {
+      const { status } = await Notifications.requestPermissionsAsync();
+      if (status !== 'granted') {
+        console.log('Notification permission denied!');
+      }
+    }
+    requestPermissions();
+  }, []);
 
   const themeContextValue = useMemo(() => ({
     toggleTheme: () => setIsDarkMode(prev => !prev),
@@ -50,37 +72,39 @@ function AppContent() {
 
   const activeTheme = isDarkMode ? darkTheme : lightTheme;
 
-  /**
-   * NAVIGATION LOGIC:
-   * 1. If a profile exists in Realm -> User is already set up, go to HomeScreen.
-   * 2. If no profile + hasn't clicked "Get Started" -> Show the WelcomeScreen.
-   * 3. If no profile + clicked "Get Started" -> Show AddProfileScreen to create the first user.
-   */
   const renderStack = () => {
+    // Kung may profile na sa Realm, diretso sa Home
     if (profiles && profiles.length > 0) {
       return <HomeScreen />;
     }
-
+    // Kung wala pa, tingnan kung nasa Welcome screen o nasa Add Profile
     if (!hasStartedOnboarding) {
       return <WelcomeScreen onStart={() => setHasStartedOnboarding(true)} />;
     }
-
     return <AddProfileScreen isFirstProfile={true} />;
   };
 
   return (
     <ThemeContext.Provider value={themeContextValue}>
       <PaperProvider theme={activeTheme}>
-        
-        {renderStack()}
+        <View style={{ flex: 1, backgroundColor: activeTheme.colors.background }}>
+          {/* StatusBar setup para sa modern look */}
+          <StatusBar 
+            barStyle={isDarkMode ? 'light-content' : 'dark-content'} 
+            backgroundColor="transparent" 
+            translucent 
+          />
+          
+          {renderStack()}
+        </View>
 
-        {/* Floating Theme Toggle - Useful for testing UI in both modes */}
+        {/* Theme Toggle Button - Floating style */}
         <Portal>
           <FAB
             icon={isDarkMode ? 'weather-sunny' : 'weather-night'}
             style={{
               position: 'absolute',
-              top: Platform.OS === 'ios' ? 50 : (StatusBar.currentHeight || 0) + 10,
+              top: Platform.OS === 'ios' ? 60 : (StatusBar.currentHeight || 0) + 10,
               right: 16,
               borderRadius: 12,
               backgroundColor: activeTheme.colors.surface,
@@ -93,14 +117,12 @@ function AppContent() {
             size="small"
           />
         </Portal>
-
       </PaperProvider>
     </ThemeContext.Provider>
   );
 }
 
 export default function App() {
-  // Load Geist fonts before rendering the app
   const [fontsLoaded] = useFonts({
     'Geist-Regular': require('./assets/fonts/geist/Geist-Regular.ttf'),
     'Geist-Medium': require('./assets/fonts/geist/Geist-Medium.ttf'),
@@ -108,16 +130,19 @@ export default function App() {
     'Geist-Bold': require('./assets/fonts/geist/Geist-Bold.ttf'),
   });
 
-  if (!fontsLoaded) {
-    return null; // Or a simple splash screen/loading spinner
-  }
+  if (!fontsLoaded) return null;
 
   return (
     <SafeAreaProvider>
-      {/* The RealmProvider must wrap the content that uses Realm hooks.
-        We pass our schemas here so Realm knows what the database looks like.
+      {/* REALM CONFIGURATION:
+          schemaVersion: 2 - Sinasabi sa Realm na nagbago ang structure (inventory fields).
+          deleteRealmIfMigrationNeeded: true - Buburahin ang lumang data para hindi mag-error.
       */}
-      <RealmProvider schema={[Medication, Profile, MedicationLog]}>
+      <RealmProvider 
+        schema={[Medication, Profile, MedicationLog]}
+        schemaVersion={2}
+        deleteRealmIfMigrationNeeded={true}
+      >
         <AppContent />
       </RealmProvider>
     </SafeAreaProvider>

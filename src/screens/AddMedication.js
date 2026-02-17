@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { View, StyleSheet, ScrollView, KeyboardAvoidingView, Platform, StatusBar } from 'react-native';
-import { Text, Button, useTheme, IconButton, TouchableRipple, SegmentedButtons, Surface } from 'react-native-paper';
+import { Text, Button, useTheme, IconButton, TouchableRipple, SegmentedButtons, Surface, Switch } from 'react-native-paper';
 
 // Realm Imports
 import { useRealm, useQuery } from '@realm/react';
@@ -15,11 +15,8 @@ import { ScreenHeader } from '../components/ScreenHeader';
 export default function AddMedication({ onBack }) {
   const theme = useTheme();
   
-  // 1. Initialize Realm Hooks
   const realm = useRealm();
   const profiles = useQuery(Profile);
-  
-  // Para sa ngayon, ise-set natin ang "Main" profile bilang default receiver ng gamot
   const mainProfile = profiles.filtered('isMain == true')[0];
 
   const [form, setForm] = useState({
@@ -33,6 +30,9 @@ export default function AddMedication({ onBack }) {
     intervalValue: '1', 
     startDate: new Date(), 
     time: new Date(),
+    isInventoryEnabled: false,
+    stock: '0',        // Total Doses/Pieces
+    reorderLevel: '5',
   });
 
   const [menuVisible, setMenuVisible] = useState({ unit: false, category: false, interval: false });
@@ -43,6 +43,13 @@ export default function AddMedication({ onBack }) {
   const categories = ['Tablet', 'Capsule', 'Liquid/Syrup', 'Injection', 'Cream/Ointment', 'Inhaler', 'Drops', 'Spray', 'Patch', 'Suppository', 'Powder'];
   const hourlyOptions = ['1', '2', '3', '4', '6', '8', '12', '24'];
   const dayOptions = ['1', '2', '3', '4', '5', '6', '7', '14', '30'];
+
+  // Logic to sync cursor/handle colors globally if the component allows
+  const inputThemeProps = {
+    cursorColor: theme.colors.primary,
+    selectionColor: theme.colors.primaryContainer,
+    selectionHandleColor: theme.colors.primary,
+  };
 
   useEffect(() => {
     if (!form.isPermanent && form.frequency === 'interval') {
@@ -79,29 +86,20 @@ export default function AddMedication({ onBack }) {
 
     text += ` starting ${formatDate(startDate)}`;
     if (!isPermanent) text += ` for a ${duration}-day course.`;
-    else text += " as part of your regular maintenance.";
+    else text += " as maintenance.";
     
     return text;
   };
 
-  // 2. UPDATED SAVE LOGIC FOR REALM
   const handleSave = () => {
-    const isNameEmpty = form.name.trim() === '';
-    const isDosageInvalid = !form.dosage || parseFloat(form.dosage) <= 0;
-    
-    if (isNameEmpty || isDosageInvalid) {
+    if (form.name.trim() === '' || !form.dosage || parseFloat(form.dosage) <= 0) {
       setModalType('emptyFields');
       return;
     }
-
-    if (!mainProfile) {
-      console.error("No profile found to assign medication!");
-      return;
-    }
+    if (!mainProfile) return;
 
     try {
       realm.write(() => {
-        // Create the Medication object
         const newMedication = realm.create('Medication', {
           _id: new Realm.BSON.UUID(),
           name: form.name,
@@ -116,16 +114,15 @@ export default function AddMedication({ onBack }) {
           reminderTime: form.time,
           createdAt: new Date(),
           isActive: true,
+          isInventoryEnabled: form.isInventoryEnabled,
+          stock: parseInt(form.stock) || 0,
+          reorderLevel: parseInt(form.reorderLevel) || 5,
         });
-
-        // Link it to the user profile
         mainProfile.medications.push(newMedication);
       });
-
-      console.log('✅ SAVED TO REALM SUCCESSFULLY');
-      onBack(); // Go back to HomeScreen
+      onBack();
     } catch (error) {
-      console.error("Failed to save to Realm:", error);
+      console.error("Failed to save:", error);
     }
   };
 
@@ -137,18 +134,18 @@ export default function AddMedication({ onBack }) {
       <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={{ flex: 1 }}>
         <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
           
-          {/* MEDICINE INFO */}
+          {/* MEDICINE DETAILS */}
           <Surface style={[styles.card, { backgroundColor: theme.colors.surface }]} elevation={1}>
             <View style={styles.cardHeader}>
                <IconButton icon="pill" size={20} iconColor={theme.colors.primary} />
-               <Text variant="titleMedium" style={{ color: theme.colors.onSurface, fontWeight: 'bold' }}>Medicine Details</Text>
+               <Text variant="titleMedium" style={styles.cardTitle}>Medicine Details</Text>
             </View>
             
             <View style={styles.group}>
-              <FormLabel label="What is the medicine name?" />
+              <FormLabel label="Medicine Name" />
               <ModernInput 
-                placeholder="e.g. Amoxicillin" 
-                placeholderTextColor={theme.colors.onSurfaceVariant} 
+                {...inputThemeProps}
+                placeholder="e.g. Tempra Syrup" 
                 value={form.name} 
                 onChangeText={(val) => updateForm('name', val)} 
               />
@@ -156,10 +153,10 @@ export default function AddMedication({ onBack }) {
 
             <View style={styles.row}>
               <View style={{ flex: 1.2 }}>
-                <FormLabel label="How much?" />
+                <FormLabel label="Dose Amount" />
                 <ModernInput 
-                  placeholder="0" 
-                  placeholderTextColor={theme.colors.onSurfaceVariant}
+                  {...inputThemeProps}
+                  placeholder="5" 
                   keyboardType="numeric" 
                   value={form.dosage} 
                   onChangeText={(val) => updateForm('dosage', val)} 
@@ -189,21 +186,68 @@ export default function AddMedication({ onBack }) {
             </View>
           </Surface>
 
+          {/* INVENTORY TRACKING */}
+          <Surface style={[styles.card, { backgroundColor: theme.colors.surface }]} elevation={1}>
+            <View style={styles.inventoryHeader}>
+              <View style={styles.cardHeader}>
+                <IconButton icon="package-variant-closed" size={20} iconColor={theme.colors.primary} />
+                <Text variant="titleMedium" style={styles.cardTitle}>Inventory Tracking</Text>
+              </View>
+              <Switch 
+                value={form.isInventoryEnabled} 
+                onValueChange={(val) => updateForm('isInventoryEnabled', val)}
+                color={theme.colors.primary}
+              />
+            </View>
+
+            {form.isInventoryEnabled && (
+              <View style={styles.dynamicField}>
+                <View style={styles.row}>
+                  <View style={{ flex: 1 }}>
+                    <FormLabel label="Total Doses/Pieces" />
+                    <ModernInput 
+                      {...inputThemeProps}
+                      placeholder="e.g. 12" 
+                      keyboardType="numeric" 
+                      value={form.stock} 
+                      onChangeText={(val) => updateForm('stock', val)} 
+                    />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <FormLabel label="Alert Level" />
+                    <ModernInput 
+                      {...inputThemeProps}
+                      placeholder="e.g. 2" 
+                      keyboardType="numeric" 
+                      value={form.reorderLevel} 
+                      onChangeText={(val) => updateForm('reorderLevel', val)} 
+                    />
+                  </View>
+                </View>
+                <Text variant="bodySmall" style={[styles.helperText, { color: theme.colors.primary }]}>
+                  {form.category === 'Liquid/Syrup' 
+                    ? "Tip: If bottle is 60ml and dose is 5ml, enter 12 doses." 
+                    : "Enter the total number of tablets or units you have."}
+                </Text>
+              </View>
+            )}
+          </Surface>
+
           {/* SCHEDULE */}
           <Surface style={[styles.card, { backgroundColor: theme.colors.surface }]} elevation={1}>
             <View style={styles.cardHeader}>
                <IconButton icon="calendar-clock" size={20} iconColor={theme.colors.primary} />
-               <Text variant="titleMedium" style={{ color: theme.colors.onSurface, fontWeight: 'bold' }}>Schedule</Text>
+               <Text variant="titleMedium" style={styles.cardTitle}>Schedule</Text>
             </View>
 
             <View style={styles.group}>
-              <FormLabel label="How long will you take this?" />
+              <FormLabel label="Treatment Duration" />
               <SegmentedButtons
                 value={form.isPermanent ? 'perm' : 'course'}
                 onValueChange={(val) => updateForm('isPermanent', val === 'perm')}
                 theme={{ colors: { secondaryContainer: theme.colors.primaryContainer, onSecondaryContainer: theme.colors.primary }}}
                 buttons={[
-                  { value: 'perm', label: 'Long-term', icon: 'infinity' },
+                  { value: 'perm', label: 'Maintenance', icon: 'infinity' },
                   { value: 'course', label: 'Set Days', icon: 'calendar-check' },
                 ]}
               />
@@ -211,8 +255,8 @@ export default function AddMedication({ onBack }) {
                 <View style={styles.dynamicField}>
                   <FormLabel label="For how many days?" />
                   <ModernInput 
-                    placeholder="e.g. 7" 
-                    placeholderTextColor={theme.colors.onSurfaceVariant}
+                    {...inputThemeProps}
+                    placeholder="7" 
                     keyboardType="numeric" 
                     value={form.duration} 
                     onChangeText={(val) => updateForm('duration', val)} 
@@ -258,9 +302,8 @@ export default function AddMedication({ onBack }) {
           <Surface style={[styles.card, { backgroundColor: theme.colors.surface }]} elevation={1}>
             <View style={styles.cardHeader}>
                <IconButton icon="bell-ring-outline" size={20} iconColor={theme.colors.primary} />
-               <Text variant="titleMedium" style={{ color: theme.colors.onSurface, fontWeight: 'bold' }}>Reminders</Text>
+               <Text variant="titleMedium" style={styles.cardTitle}>Reminders</Text>
             </View>
-
             <View style={[styles.dateTimeContainer, { borderTopColor: theme.colors.outlineVariant }]}>
                <TouchableRipple onPress={() => togglePicker('date', true)} style={styles.flex1} borderless>
                   <View style={styles.dateTimeBox}>
@@ -268,9 +311,7 @@ export default function AddMedication({ onBack }) {
                      <Text variant="bodyLarge" style={styles.boldText}>{formatDate(form.startDate)}</Text>
                   </View>
                </TouchableRipple>
-               
                <View style={[styles.verticalDivider, { backgroundColor: theme.colors.outlineVariant }]} />
-
                <TouchableRipple onPress={() => togglePicker('time', true)} style={styles.flex1} borderless>
                   <View style={styles.dateTimeBox}>
                      <Text variant="labelSmall" style={{ color: theme.colors.secondary }}>REMINDER TIME</Text>
@@ -280,14 +321,7 @@ export default function AddMedication({ onBack }) {
             </View>
           </Surface>
 
-          {/* SUMMARY BOX */}
           <View style={[styles.summaryBox, { backgroundColor: theme.colors.primaryContainer, borderColor: theme.colors.primary }]}>
-              <View style={styles.summaryHeader}>
-                <IconButton icon="information" size={16} iconColor={theme.colors.primary} style={styles.noMargin} />
-                <Text variant="labelMedium" style={{ color: theme.colors.primary, fontWeight: 'bold' }}>
-                  SCHEDULE SUMMARY
-                </Text>
-              </View>
               <Text variant="bodyMedium" style={{ color: theme.colors.onPrimaryContainer, lineHeight: 20 }}>
                 {getScheduleSummary()}
               </Text>
@@ -296,20 +330,21 @@ export default function AddMedication({ onBack }) {
           <Button 
             mode="contained" 
             onPress={handleSave} 
-            style={[styles.saveButton, { borderRadius: theme.roundness }]}
+            style={styles.saveButton}
             contentStyle={{ height: 56 }}
             labelStyle={{ fontSize: 16, fontWeight: 'bold' }}
           >
             Confirm & Save
           </Button>
 
-          {/* MODALS */}
           <StatusModal 
             visible={modalType !== null}
             onDismiss={() => setModalType(null)}
             title={modalType === 'pastTime' ? "Invalid Time" : "Missing Info"}
             message={
-              modalType === 'pastTime' ? "Reminders cannot be set in the past. We've adjusted it to the next minute for you." : "Please enter a medicine name and a valid dosage."
+              modalType === 'pastTime' 
+                ? "Reminders cannot be set in the past. We've adjusted it to the next minute for you." 
+                : "Please enter a medicine name and a valid dosage."
             }
             type="warning"
           />
@@ -328,7 +363,6 @@ export default function AddMedication({ onBack }) {
             }}
             onCancel={() => togglePicker('time', false)}
           />
-          
           <DateSelector 
             show={pickerVisible.date}
             value={form.startDate}
@@ -340,7 +374,6 @@ export default function AddMedication({ onBack }) {
             }}
             onCancel={() => togglePicker('date', false)}
           />
-
         </ScrollView>
       </KeyboardAvoidingView>
     </View>
@@ -350,18 +383,19 @@ export default function AddMedication({ onBack }) {
 const styles = StyleSheet.create({
   container: { flex: 1 },
   scrollContent: { padding: 16, gap: 16 },
-  card: { padding: 16, gap: 16, borderRadius: 20 },
+  card: { padding: 16, gap: 16, borderRadius: 24 },
   cardHeader: { flexDirection: 'row', alignItems: 'center', marginLeft: -12, marginBottom: -8 },
+  cardTitle: { fontWeight: 'bold' },
+  inventoryHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   group: { gap: 8 },
   row: { flexDirection: 'row', gap: 12 },
   dynamicField: { marginTop: 4, gap: 8 },
+  helperText: { opacity: 0.8, fontStyle: 'italic', paddingLeft: 4, fontSize: 12 },
   dateTimeContainer: { flexDirection: 'row', borderTopWidth: 1, paddingTop: 16, marginTop: 8 },
   flex1: { flex: 1 },
   dateTimeBox: { alignItems: 'center', gap: 4, paddingVertical: 8 },
   verticalDivider: { width: 1 },
   boldText: { fontWeight: 'bold' },
-  summaryBox: { padding: 12, borderRadius: 16, borderStyle: 'dashed', borderWidth: 1 },
-  summaryHeader: { flexDirection: 'row', alignItems: 'center', marginBottom: 4 },
-  noMargin: { margin: 0 },
-  saveButton: { marginTop: 8, marginBottom: 50 },
+  summaryBox: { padding: 16, borderRadius: 20, borderStyle: 'dashed', borderWidth: 1 },
+  saveButton: { marginTop: 8, marginBottom: 50, borderRadius: 16 },
 });
