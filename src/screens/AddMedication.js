@@ -5,7 +5,7 @@ import { Text, Button, useTheme, IconButton, TouchableRipple, SegmentedButtons }
 import { FormLabel, ModernInput } from '../components/FormInput';
 import { SelectionMenu } from '../components/SelectionMenu';
 import { TimeSelector, DateSelector } from '../components/TimeSelector'; 
-import { StatusModal } from '../components/StatusModal'; // New separate import
+import { StatusModal } from '../components/StatusModal';
 import { ScreenHeader } from '../components/ScreenHeader';
 
 export default function AddMedication({ onBack }) {
@@ -52,6 +52,26 @@ export default function AddMedication({ onBack }) {
     
     return text;
   };
+
+  // FIXED: Update both date and time together
+  const handleDateChange = (newDate) => {
+    // When date changes, preserve the current time
+    const updatedDateTime = new Date(newDate);
+    updatedDateTime.setHours(form.time.getHours());
+    updatedDateTime.setMinutes(form.time.getMinutes());
+    
+    updateForm('startDate', updatedDateTime);
+    updateForm('time', updatedDateTime);
+  };
+
+  const handleTimeChange = (e, newDateTime) => {
+  if (newDateTime) {
+    // Update both startDate and time to keep them in sync
+    updateForm('startDate', newDateTime);
+    updateForm('time', newDateTime);
+  }
+  togglePicker('time', false);
+};
 
   return (
     <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
@@ -214,19 +234,21 @@ export default function AddMedication({ onBack }) {
             type="warning"
           />
 
-          {/* Date & Time Selectors */}
           <TimeSelector 
             show={pickerVisible.time} 
             value={form.time} 
-            onInvalidTime={() => setPastTimeModalVisible(true)} // Triggering our custom modal
-            onChange={(e, date) => { togglePicker('time', false); if(date) updateForm('time', date); }} 
+            onInvalidTime={() => {
+              console.log("Triggering Modal..."); // Debug line
+              setPastTimeModalVisible(true);
+            }}
+            onChange={handleTimeChange}
             onCancel={() => togglePicker('time', false)}
           />
           
           <DateSelector 
             show={pickerVisible.date}
             value={form.startDate}
-            onChange={(date) => updateForm('startDate', date)}
+            onChange={handleDateChange}
             onCancel={() => togglePicker('date', false)}
           />
 
