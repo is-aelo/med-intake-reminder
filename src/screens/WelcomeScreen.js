@@ -1,57 +1,40 @@
 import React from 'react';
-import { View, StyleSheet, Platform } from 'react-native';
+import { View, StyleSheet, Dimensions } from 'react-native';
 import { Text, Button, useTheme } from 'react-native-paper';
 
+const { width } = Dimensions.get('window');
+
+// Eto dapat ang laman ng WelcomeScreen. Focus lang sa UI at yung onStart button.
 export default function WelcomeScreen({ onStart }) {
   const theme = useTheme();
 
   return (
     <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
-      <View style={styles.welcomeContent}>
-        
-        {/* Icon Circle with Organic Shadow */}
-        <View style={[
-          styles.iconCircle, 
-          { 
-            backgroundColor: theme.colors.primaryContainer,
-            // Using primary color for shadow with low opacity for that "blur" effect
-            shadowColor: theme.colors.primary, 
-            elevation: 4, 
-          }
-        ]}>
-          <Text style={styles.logo}>💊</Text>
+      <View style={styles.content}>
+        {/* Visual Icon */}
+        <View style={[styles.iconContainer, { backgroundColor: theme.colors.primaryContainer }]}>
+           <Text style={{ fontSize: 80 }}>💊</Text>
         </View>
 
-        <Text 
-          variant="displaySmall" 
-          style={[styles.appName, { color: theme.colors.primary, fontFamily: theme.fonts.displaySmall.fontFamily }]}
-        >
-          MedReminder
+        <Text variant="displaySmall" style={styles.title}>
+          Never Miss a Dose
         </Text>
         
-        <Text 
-          variant="bodyLarge" 
-          style={[styles.description, { color: theme.colors.secondary, fontFamily: theme.fonts.bodyLarge.fontFamily }]}
-        >
-          Your simple and reliable partner in health.{"\n"}Never miss a dose again.
+        <Text variant="bodyLarge" style={[styles.subtitle, { color: theme.colors.onSurfaceVariant }]}>
+          Your simple, smart, and reliable medication reminder and tracker.
         </Text>
+      </View>
 
+      <View style={styles.footer}>
         <Button 
           mode="contained" 
-          style={[styles.startButton, { borderRadius: theme.roundness }]}
+          onPress={onStart} 
+          style={styles.button}
           contentStyle={styles.buttonContent}
-          labelStyle={{ fontFamily: theme.fonts.labelLarge.fontFamily }}
-          onPress={onStart}
+          labelStyle={{ fontSize: 18, fontWeight: 'bold' }}
         >
           Get Started
         </Button>
-
-        <Text 
-          variant="labelSmall" 
-          style={[styles.footer, { color: theme.colors.outline, fontFamily: theme.fonts.labelLarge.fontFamily }]}
-        >
-          Version 1.0.0
-        </Text>
       </View>
     </View>
   );
@@ -60,47 +43,38 @@ export default function WelcomeScreen({ onStart }) {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
+    padding: 24,
   },
-  welcomeContent: {
+  content: {
     flex: 1,
-    alignItems: 'center',
     justifyContent: 'center',
-    padding: 30,
-  },
-  iconCircle: {
-    width: 140,
-    height: 140,
-    borderRadius: 70, // Keep this as circle
     alignItems: 'center',
+  },
+  iconContainer: {
+    width: 160,
+    height: 160,
+    borderRadius: 80,
     justifyContent: 'center',
-    marginBottom: 30,
-    // iOS Shadow Logic using the theme color
-    shadowOffset: { width: 0, height: 10 },
-    shadowOpacity: 0.15,
-    shadowRadius: 20,
+    alignItems: 'center',
+    marginBottom: 40,
   },
-  logo: {
-    fontSize: 60,
-  },
-  appName: {
-    marginBottom: 12,
+  title: {
+    fontWeight: 'bold',
     textAlign: 'center',
+    marginBottom: 16,
   },
-  description: {
+  subtitle: {
     textAlign: 'center',
-    lineHeight: 26,
-    marginBottom: 50,
-    paddingHorizontal: 10,
-  },
-  startButton: {
-    width: '100%',
-  },
-  buttonContent: {
-    height: 52,
+    paddingHorizontal: 20,
+    lineHeight: 24,
   },
   footer: {
-    position: 'absolute',
-    bottom: 30,
-    letterSpacing: 1,
+    paddingBottom: 40,
+  },
+  button: {
+    borderRadius: 16,
+  },
+  buttonContent: {
+    height: 56,
   },
 });

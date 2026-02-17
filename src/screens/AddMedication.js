@@ -2,6 +2,10 @@ import React, { useState, useEffect } from 'react';
 import { View, StyleSheet, ScrollView, KeyboardAvoidingView, Platform, StatusBar } from 'react-native';
 import { Text, Button, useTheme, IconButton, TouchableRipple, SegmentedButtons, Surface } from 'react-native-paper';
 
+// Realm Imports
+import { useRealm, useQuery } from '@realm/react';
+import { Profile, Medication } from '../models/Schemas';
+
 import { FormLabel, ModernInput } from '../components/FormInput';
 import { SelectionMenu } from '../components/SelectionMenu';
 import { TimeSelector, DateSelector } from '../components/TimeSelector'; 
@@ -10,6 +14,13 @@ import { ScreenHeader } from '../components/ScreenHeader';
 
 export default function AddMedication({ onBack }) {
   const theme = useTheme();
+  
+  // 1. Initialize Realm Hooks
+  const realm = useRealm();
+  const profiles = useQuery(Profile);
+  
+  // Para sa ngayon, ise-set natin ang "Main" profile bilang default receiver ng gamot
+  const mainProfile = profiles.filtered('isMain == true')[0];
 
   const [form, setForm] = useState({
     name: '',
@@ -73,14 +84,49 @@ export default function AddMedication({ onBack }) {
     return text;
   };
 
+  // 2. UPDATED SAVE LOGIC FOR REALM
   const handleSave = () => {
     const isNameEmpty = form.name.trim() === '';
     const isDosageInvalid = !form.dosage || parseFloat(form.dosage) <= 0;
+    
     if (isNameEmpty || isDosageInvalid) {
       setModalType('emptyFields');
       return;
     }
-    console.log('✅ READY FOR REALM:', form);
+
+    if (!mainProfile) {
+      console.error("No profile found to assign medication!");
+      return;
+    }
+
+    try {
+      realm.write(() => {
+        // Create the Medication object
+        const newMedication = realm.create('Medication', {
+          _id: new Realm.BSON.UUID(),
+          name: form.name,
+          dosage: form.dosage,
+          unit: form.unit,
+          category: form.category,
+          isPermanent: form.isPermanent,
+          duration: form.isPermanent ? null : form.duration,
+          frequency: form.frequency,
+          intervalValue: form.intervalValue,
+          startDate: form.startDate,
+          reminderTime: form.time,
+          createdAt: new Date(),
+          isActive: true,
+        });
+
+        // Link it to the user profile
+        mainProfile.medications.push(newMedication);
+      });
+
+      console.log('✅ SAVED TO REALM SUCCESSFULLY');
+      onBack(); // Go back to HomeScreen
+    } catch (error) {
+      console.error("Failed to save to Realm:", error);
+    }
   };
 
   return (
@@ -273,7 +319,11 @@ export default function AddMedication({ onBack }) {
             value={form.time} 
             onInvalidTime={() => setTimeout(() => setModalType('pastTime'), 400)}
             onChange={(e, date) => {
-              if(date) { updateForm('startDate', date); updateForm('time', date); }
+              if(date) { 
+                const newDate = new Date(form.startDate);
+                newDate.setHours(date.getHours(), date.getMinutes());
+                updateForm('time', newDate); 
+              }
               togglePicker('time', false);
             }}
             onCancel={() => togglePicker('time', false)}
@@ -286,7 +336,6 @@ export default function AddMedication({ onBack }) {
               const updated = new Date(date);
               updated.setHours(form.time.getHours(), form.time.getMinutes());
               updateForm('startDate', updated);
-              updateForm('time', updated);
               togglePicker('date', false);
             }}
             onCancel={() => togglePicker('date', false)}
