@@ -13,13 +13,12 @@ class NotificationService {
 
   async bootstrap() {
     await notifee.createChannel({
-      id: 'medication_reminders_premium',
-      name: 'Medication Reminders',
-      description: 'Gentle and professional health reminders.',
+      id: 'medication_alarms', // Bagong ID para sa alarm behavior
+      name: 'Medication Alarms',
+      description: 'Critical health reminders with sound.',
       importance: AndroidImportance.HIGH, 
       vibration: true,
-      vibrationPattern: [300, 200, 300, 200], 
-      sound: 'default', 
+      sound: 'med_alarm', // Tinuturo ang med_alarm.mp3 sa res/raw
       visibility: AndroidVisibility.PUBLIC, 
       bypassDnd: true, 
     });
@@ -49,31 +48,34 @@ class NotificationService {
       await notifee.createTriggerNotification(
         {
           id: stringId,
-          title: '💊 Time for your health break',
-          body: `Hi! It's time for your ${dosage} of ${name}. Staying on track helps you feel your best! ✨`,
+          title: '💊 Medication Alarm',
+          body: `Time for your ${dosage} of ${name}.`,
           data: {
             medicationId: stringId, 
             medicationName: String(name), 
             dosage: String(dosage), 
             scheduledAt: originalScheduledTime || new Date(scheduledTime).toISOString(),
+            isAlarm: 'true', // Flag para malaman ng App.js na alarm ito
           },
           android: {
-            channelId: 'medication_reminders_premium',
+            channelId: 'medication_alarms',
             category: AndroidCategory.ALARM,
+            importance: AndroidImportance.HIGH,
+            priority: 'high',
+            visibility: AndroidVisibility.PUBLIC,
+            
+            // --- SOUND CONFIG ---
+            sound: 'med_alarm', 
 
-            // --- THE WAKE-UP TRICK ---
-            // Nilagay ulit natin 'to para mag-wake ang screen. 
-            // Dahil sa previous MainActivity updates natin (no setShowWhenLocked), 
-            // dapat iilaw lang ang screen para ipakita ang card, hindi ang dashboard.
+            // --- THE ALARM TRIGGER ---
+            // Ito ang magbubukas sa App.js para ipakita ang Overlay
             fullScreenAction: {
               id: 'default',
             },
 
-            importance: AndroidImportance.HIGH,
-            priority: 'high',
-            visibility: AndroidVisibility.PUBLIC,
-            autoCancel: true,        
-            ongoing: false,
+            // Ginawang true para hindi ma-swipe hangga't hindi ini-ignore o tina-take
+            ongoing: true, 
+            autoCancel: false,
 
             pressAction: { 
               id: 'default',
@@ -87,7 +89,7 @@ class NotificationService {
                 pressAction: { id: 'taken' },
               },
               {
-                title: '⏰ Snooze (10m)',
+                title: '⏰ Snooze',
                 pressAction: { id: 'snooze' },
               },
             ],
@@ -96,7 +98,7 @@ class NotificationService {
         trigger,
       );
 
-      console.log(`[NotificationService] Scheduled: ${name}. Force Wake + Card mode enabled.`);
+      console.log(`[NotificationService] Alarm Scheduled: ${name} with med_alarm sound.`);
     } catch (error) {
       console.error('[NotificationService] Error:', error);
     }
@@ -108,6 +110,7 @@ class NotificationService {
         await notifee.cancelNotification(notification.id);
       }
       const { medicationId, medicationName, dosage, scheduledAt } = notification.data;
+      // 10 minutes snooze
       const snoozeDate = new Date(Date.now() + 10 * 60 * 1000); 
       await this.scheduleMedication(medicationId, medicationName, dosage, snoozeDate, scheduledAt);
     } catch (error) {

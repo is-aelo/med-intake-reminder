@@ -1,5 +1,5 @@
 import 'react-native-gesture-handler';
-import React, { useState, createContext, useEffect } from 'react';
+import React, { useState, createContext, useEffect, useMemo } from 'react';
 import { StatusBar, View, ActivityIndicator, AppState } from 'react-native';
 import { PaperProvider, FAB, Portal, Text, useTheme } from 'react-native-paper';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -19,6 +19,7 @@ import Realm from 'realm';
 import { Medication, Profile, MedicationLog } from './src/models/Schemas';
 import { lightTheme, darkTheme } from './src/theme';
 import NotificationService from './src/services/NotificationService';
+import AlarmOverlay from './src/components/AlarmOverlay';
 
 // Screens
 import HomeScreen from './src/screens/HomeScreen';
@@ -26,8 +27,9 @@ import HistoryScreen from './src/screens/HistoryScreen';
 import WelcomeScreen from './src/screens/WelcomeScreen';
 import AddProfileScreen from './src/screens/AddProfileScreen';
 
+export const ThemeContext = createContext({ toggleTheme: () => {}, isDarkMode: false });
+
 // --- SHARED LOGIC FOR SAVING LOGS ---
-// Ang logic na ito ay tatakbo sa background o foreground kapag pinindot ang 'Taken' o 'Snooze'
 const performMedicationAction = async (realm, notification, actionId) => {
   const { medicationId, medicationName, scheduledAt } = notification.data;
   
@@ -53,7 +55,6 @@ const performMedicationAction = async (realm, notification, actionId) => {
           medication.stock -= 1;
         }
       });
-      console.log(`[Action] Logged 'taken' for ${medicationName}`);
     } 
     
     if (actionId === 'snooze') {
@@ -67,31 +68,22 @@ const performMedicationAction = async (realm, notification, actionId) => {
 };
 
 // --- BACKGROUND EVENT HANDLER ---
-// Mahalaga ito para ma-process ang buttons kahit hindi mo buksan ang app mula sa lockscreen
 notifee.onBackgroundEvent(async ({ type, detail }) => {
   const { notification, pressAction } = detail;
-
   if (type === EventType.ACTION_PRESS) {
     const realm = await Realm.open({
       schema: [Medication, Profile, MedicationLog],
       schemaVersion: 2,
-      deleteRealmIfMigrationNeeded: true, 
     });
-
     try {
       await performMedicationAction(realm, notification, pressAction.id);
-    } catch (error) {
-      console.error('[Background Event Error]:', error);
     } finally {
-      if (AppState.currentState !== 'active') {
-        realm.close();
-      }
+      realm.close();
     }
   }
 });
 
 const Tab = createBottomTabNavigator();
-export const ThemeContext = createContext({ toggleTheme: () => {}, isDarkMode: false });
 
 function MainTabs() {
   const theme = useTheme();
@@ -109,8 +101,6 @@ function MainTabs() {
           paddingTop: 8,
           backgroundColor: theme.colors.surface,
           borderTopWidth: 0,
-          elevation: 0,
-          shadowOpacity: 0,
         },
         tabBarLabelStyle: { 
           fontFamily: 'Geist-Medium', 
@@ -145,12 +135,27 @@ function AppContent() {
   const [isDarkMode, setIsDarkMode] = useState(false);
   const [hasStartedOnboarding, setHasStartedOnboarding] = useState(false);
   const [isInitializing, setIsInitializing] = useState(true);
+  const [activeAlarm, setActiveAlarm] = useState(null);
 
   useEffect(() => {
-    // Foreground events para sa 'taken'/'snooze' buttons habang gising ang app
+    // 1. Initial Launch check
+    notifee.getInitialNotification().then(initial => {
+      if (initial?.notification?.data?.isAlarm === 'true') {
+        setActiveAlarm(initial.notification);
+      }
+    });
+
+    // 2. Foreground events check
     const unsubscribe = notifee.onForegroundEvent(async ({ type, detail }) => {
+      const { notification } = detail;
+
+      if (notification?.data?.isAlarm === 'true') {
+        setActiveAlarm(notification);
+      }
+
       if (type === EventType.ACTION_PRESS) {
-        await performMedicationAction(realm, detail.notification, detail.pressAction.id);
+        await performMedicationAction(realm, notification, detail.pressAction.id);
+        setActiveAlarm(null);
       }
     });
 
@@ -162,23 +167,15 @@ function AppContent() {
     };
   }, [realm]);
 
-  const handleStartOnboarding = async () => {
-    try {
-      await notifee.requestPermission();
-      await NotificationService.bootstrap();
-      setHasStartedOnboarding(true);
-    } catch (e) {
-      setHasStartedOnboarding(true);
-    }
-  };
-
-  const activeTheme = isDarkMode ? darkTheme : lightTheme;
+  const activeTheme = useMemo(() => (isDarkMode ? darkTheme : lightTheme), [isDarkMode]);
 
   if (isInitializing) {
     return (
       <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: activeTheme.colors.background }}>
         <ActivityIndicator size="large" color={activeTheme.colors.primary} />
-        <Text style={{ marginTop: 16, color: activeTheme.colors.onSurfaceVariant, fontFamily: 'Geist-Medium' }}>Initializing health services...</Text>
+        <Text style={{ marginTop: 16, color: activeTheme.colors.onSurfaceVariant, fontFamily: 'Geist-Medium' }}>
+          Initializing health services...
+        </Text>
       </View>
     );
   }
@@ -190,10 +187,30 @@ function AppContent() {
           <View style={{ flex: 1, backgroundColor: activeTheme.colors.background }}>
             <StatusBar barStyle={isDarkMode ? 'light-content' : 'dark-content'} backgroundColor="transparent" translucent />
             
+            {/* Conditional Rendering using a pure ternary to avoid "Text string" errors */}
+            {activeAlarm ? (
+              <AlarmOverlay 
+                isVisible={true}
+                medication={activeAlarm.data}
+                onTake={async () => {
+                  await performMedicationAction(realm, activeAlarm, 'taken');
+                  setActiveAlarm(null);
+                }}
+                onSnooze={async () => {
+                  await performMedicationAction(realm, activeAlarm, 'snooze');
+                  setActiveAlarm(null);
+                }}
+              />
+            ) : null}
+
             {profiles.length > 0 ? (
               <MainTabs /> 
             ) : !hasStartedOnboarding ? (
-              <WelcomeScreen onStart={handleStartOnboarding} />
+              <WelcomeScreen onStart={() => {
+                notifee.requestPermission();
+                NotificationService.bootstrap();
+                setHasStartedOnboarding(true);
+              }} />
             ) : (
               <AddProfileScreen isFirstProfile={true} />
             )}
@@ -229,7 +246,6 @@ export default function App() {
         schema={[Medication, Profile, MedicationLog]} 
         schemaVersion={2} 
         deleteRealmIfMigrationNeeded={true}
-        fallback={() => <View style={{flex:1, backgroundColor:'#fff'}}/>}
       >
         <AppContent />
       </RealmProvider>
