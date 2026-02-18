@@ -27,6 +27,7 @@ import WelcomeScreen from './src/screens/WelcomeScreen';
 import AddProfileScreen from './src/screens/AddProfileScreen';
 
 // --- SHARED LOGIC FOR SAVING LOGS ---
+// Ang logic na ito ay tatakbo sa background o foreground kapag pinindot ang 'Taken' o 'Snooze'
 const performMedicationAction = async (realm, notification, actionId) => {
   const { medicationId, medicationName, scheduledAt } = notification.data;
   
@@ -66,11 +67,11 @@ const performMedicationAction = async (realm, notification, actionId) => {
 };
 
 // --- BACKGROUND EVENT HANDLER ---
+// Mahalaga ito para ma-process ang buttons kahit hindi mo buksan ang app mula sa lockscreen
 notifee.onBackgroundEvent(async ({ type, detail }) => {
   const { notification, pressAction } = detail;
 
   if (type === EventType.ACTION_PRESS) {
-    // Buksan ang Realm instance para sa background process
     const realm = await Realm.open({
       schema: [Medication, Profile, MedicationLog],
       schemaVersion: 2,
@@ -82,10 +83,6 @@ notifee.onBackgroundEvent(async ({ type, detail }) => {
     } catch (error) {
       console.error('[Background Event Error]:', error);
     } finally {
-      /**
-       * FIX: Importante! I-close lang ang realm kung ang app state ay hindi 'active'.
-       * Kung 'active' ang app, hayaan ang RealmProvider sa UI thread ang mag-handle.
-       */
       if (AppState.currentState !== 'active') {
         realm.close();
       }
@@ -105,30 +102,38 @@ function MainTabs() {
       screenOptions={{ 
         headerShown: false,
         tabBarActiveTintColor: theme.colors.primary, 
+        tabBarInactiveTintColor: theme.dark ? '#888888' : '#666666',
         tabBarStyle: { 
           height: 65 + insets.bottom, 
           paddingBottom: insets.bottom > 0 ? insets.bottom : 8,
           paddingTop: 8,
           backgroundColor: theme.colors.surface,
+          borderTopWidth: 0,
+          elevation: 0,
+          shadowOpacity: 0,
         },
-        tabBarLabelStyle: { fontFamily: 'Geist-Medium', fontSize: 12 }
+        tabBarLabelStyle: { 
+          fontFamily: 'Geist-Medium', 
+          fontSize: 12,
+          marginBottom: 4 
+        }
       }}
     >
       <Tab.Screen 
         name="Meds" 
         component={HomeScreen} 
-        options={{
-          tabBarLabel: 'Today',
-          tabBarIcon: ({ color, size }) => <MaterialCommunityIcons name="pill" color={color} size={size} />,
-        }}
+        options={{ 
+          tabBarLabel: 'Today', 
+          tabBarIcon: ({ color }) => <MaterialCommunityIcons name="pill" color={color} size={26} /> 
+        }} 
       />
       <Tab.Screen 
         name="History" 
         component={HistoryScreen} 
-        options={{
-          tabBarLabel: 'History',
-          tabBarIcon: ({ color, size }) => <MaterialCommunityIcons name="history" color={color} size={size} />,
-        }}
+        options={{ 
+          tabBarLabel: 'History', 
+          tabBarIcon: ({ color }) => <MaterialCommunityIcons name="clipboard-text" color={color} size={26} /> 
+        }} 
       />
     </Tab.Navigator>
   );
@@ -142,6 +147,7 @@ function AppContent() {
   const [isInitializing, setIsInitializing] = useState(true);
 
   useEffect(() => {
+    // Foreground events para sa 'taken'/'snooze' buttons habang gising ang app
     const unsubscribe = notifee.onForegroundEvent(async ({ type, detail }) => {
       if (type === EventType.ACTION_PRESS) {
         await performMedicationAction(realm, detail.notification, detail.pressAction.id);
