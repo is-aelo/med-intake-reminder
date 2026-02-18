@@ -1,4 +1,3 @@
-// src/screens/HomeScreen.js
 import React, { useState, useMemo } from 'react';
 import { View, StyleSheet, ScrollView, Alert, TouchableOpacity, StatusBar, Platform } from 'react-native';
 import { Text, FAB, useTheme, Card, IconButton, Surface, Avatar, ProgressBar, Button } from 'react-native-paper';
@@ -32,7 +31,8 @@ export default function HomeScreen() {
   const logs = useQuery(MedicationLog);
 
   const mainProfile = useMemo(() => {
-    return profiles.filtered('isMain == true')[0] || profiles[0];
+    // FIXED: Removed .filtered() for safety, used JS .find()
+    return profiles.find(p => p.isMain === true) || profiles[0];
   }, [profiles]);
 
   const now = new Date();
@@ -45,9 +45,11 @@ export default function HomeScreen() {
     day: 'numeric',
   });
 
-  // Logic to filter today's medications
+  // FIXED: Pure JavaScript filtering to avoid 'isValid()' predicate error
   const todayMedications = useMemo(() => {
-    return allMedications.filter(med => {
+    const validMedications = allMedications.filter(med => med.isValid());
+
+    const filtered = validMedications.filter(med => {
       if (!med.isActive) return false;
       const start = new Date(med.startDate);
       const startDay = new Date(start.getFullYear(), start.getMonth(), start.getDate());
@@ -69,16 +71,38 @@ export default function HomeScreen() {
       endDay.setDate(endDay.getDate() + durationDays - 1);
       return todayStart <= endDay && matchesFrequency();
     });
+
+    return filtered.map(med => ({
+      _id: med._id,
+      idString: med._id.toHexString(),
+      name: med.name,
+      reminderTime: med.reminderTime,
+      dosage: med.dosage,
+      unit: med.unit,
+      category: med.category,
+      isInventoryEnabled: med.isInventoryEnabled,
+      stock: med.stock,
+      reorderLevel: med.reorderLevel,
+    }));
   }, [allMedications, todayStart]);
 
-  const getDoseStatus = (med) => {
-    const dayLogs = logs.filtered(
-      'medicationId == $0 AND takenAt >= $1 AND takenAt < $2',
-      med._id,
-      todayStart,
-      tomorrowStart
+  const getDoseStatus = (medId) => {
+    // FIXED: Used JS filter instead of .filtered() string
+    const dayLogs = logs.filter(l => 
+      l.isValid() &&
+      l.medicationId.equals(medId) && 
+      l.takenAt >= todayStart && 
+      l.takenAt < tomorrowStart
     );
-    if (dayLogs.length > 0) return dayLogs.sorted('takenAt', true)[0].status;
+
+    if (dayLogs.length > 0) {
+      const sortedLogs = dayLogs.sort((a, b) => b.takenAt - a.takenAt);
+      return sortedLogs[0].status;
+    }
+    
+    const med = allMedications.find(m => m.isValid() && m._id.equals(medId));
+    if (!med) return 'pending';
+
     const reminder = new Date(med.reminderTime);
     reminder.setFullYear(todayStart.getFullYear(), todayStart.getMonth(), todayStart.getDate());
     return now > reminder ? 'missed' : 'pending';
@@ -87,11 +111,12 @@ export default function HomeScreen() {
   const stats = useMemo(() => {
     const total = todayMedications.length;
     const takenTodayCount = todayMedications.reduce((count, med) => {
-      const isTaken = logs.filtered(
-        'medicationId == $0 AND status == "taken" AND takenAt >= $1 AND takenAt < $2',
-        med._id,
-        todayStart,
-        tomorrowStart
+      const isTaken = logs.filter(l => 
+        l.isValid() &&
+        l.medicationId.equals(med._id) && 
+        l.status === "taken" && 
+        l.takenAt >= todayStart && 
+        l.takenAt < tomorrowStart
       ).length > 0;
       return isTaken ? count + 1 : count;
     }, 0);
@@ -100,12 +125,12 @@ export default function HomeScreen() {
       total,
       taken: takenTodayCount,
       progress: total > 0 ? takenTodayCount / total : 0,
-      grandTotal: allMedications.length,
+      grandTotal: allMedications.filter(m => m.isValid()).length,
     };
   }, [todayMedications, logs, todayStart, tomorrowStart, allMedications]);
 
   const nextMed = useMemo(() => {
-    const pending = todayMedications.filter(m => getDoseStatus(m) === 'pending');
+    const pending = todayMedications.filter(m => getDoseStatus(m._id) === 'pending');
     if (pending.length === 0) return null;
     const sorted = [...pending].sort((a, b) => {
       const ta = new Date(a.reminderTime);
@@ -117,36 +142,37 @@ export default function HomeScreen() {
   }, [todayMedications, now]);
 
   const handleTakeMedication = (med) => {
-    if (getDoseStatus(med) === 'taken') return;
+    if (getDoseStatus(med._id) === 'taken') return;
     try {
-      // 1. Cancel the notification banner if it exists
       NotificationService.cancelNotification(med._id);
 
-      // 2. Log the medication as taken
       realm.write(() => {
+        const liveMed = realm.objectForPrimaryKey('Medication', med._id);
+        if (!liveMed || !liveMed.isValid()) return;
+
         const currentTime = new Date();
-        const scheduledDate = new Date(med.reminderTime);
+        const scheduledDate = new Date(liveMed.reminderTime);
         scheduledDate.setFullYear(currentTime.getFullYear(), currentTime.getMonth(), currentTime.getDate());
         
         const delay = Math.round((currentTime - scheduledDate) / 60000);
 
         realm.create('MedicationLog', {
           _id: new Realm.BSON.UUID(),
-          medicationId: med._id,
-          medicationName: med.name,
+          medicationId: liveMed._id,
+          medicationName: liveMed.name,
           status: 'taken',
           scheduledAt: scheduledDate,
           takenAt: currentTime,
           delayMinutes: delay,
         });
 
-        if (med.isInventoryEnabled && med.stock > 0) {
-          med.stock -= 1;
+        if (liveMed.isInventoryEnabled && liveMed.stock > 0) {
+          liveMed.stock -= 1;
         }
       });
 
-      if (med.isInventoryEnabled && med.stock <= med.reorderLevel) {
-        Alert.alert('Low Stock', `Paubos na ang ${med.name}! (${med.stock} left)`);
+      if (med.isInventoryEnabled && (med.stock - 1) <= med.reorderLevel) {
+        Alert.alert('Low Stock', `Paubos na ang ${med.name}! (${med.stock - 1} left)`);
       }
     } catch (error) {
       console.error("HomeScreen Error:", error);
@@ -159,8 +185,6 @@ export default function HomeScreen() {
       <IconButton
         icon="pencil"
         mode="contained"
-        containerColor={theme.colors.secondaryContainer}
-        iconColor={theme.colors.onSecondaryContainer}
         onPress={() => {
           setEditingId(med._id);
           setShowForm(true);
@@ -170,11 +194,15 @@ export default function HomeScreen() {
         icon="delete"
         mode="contained"
         containerColor={theme.colors.errorContainer}
-        iconColor={theme.colors.onErrorContainer}
         onPress={() => {
           Alert.alert('Delete', `Remove ${med.name}?`, [
             { text: 'Cancel', style: 'cancel' },
-            { text: 'Delete', style: 'destructive', onPress: () => realm.write(() => realm.delete(med)) },
+            { text: 'Delete', style: 'destructive', onPress: () => {
+                realm.write(() => {
+                    const liveMed = realm.objectForPrimaryKey('Medication', med._id);
+                    if (liveMed && liveMed.isValid()) realm.delete(liveMed);
+                });
+            }},
           ]);
         }}
       />
@@ -188,16 +216,7 @@ export default function HomeScreen() {
   }
 
   if (viewCabinet) {
-    return (
-      <MedicineCabinet 
-        onBack={() => setViewCabinet(false)} 
-        onEditMedication={(id) => {
-          setEditingId(id);
-          setShowForm(true);
-          setViewCabinet(false);
-        }}
-      />
-    );
+    return <MedicineCabinet onBack={() => setViewCabinet(false)} onEditMedication={(id) => { setEditingId(id); setShowForm(true); setViewCabinet(false); }} />;
   }
 
   return (
@@ -207,126 +226,83 @@ export default function HomeScreen() {
         
         <View style={[styles.profileHeader, { paddingTop: insets.top + 10 }]}>
           <View>
-            <Text variant="labelLarge" style={{ color: theme.colors.secondary, letterSpacing: 1, fontFamily: 'Geist-Bold' }}>
+            <Text variant="labelLarge" style={{ color: theme.colors.secondary, letterSpacing: 1 }}>
               {todayString.toUpperCase()}
             </Text>
-            <Text variant="headlineSmall" style={[styles.userName, { color: theme.colors.onSurface, fontFamily: 'Geist-Bold' }]}>
+            <Text variant="headlineSmall" style={styles.userName}>
               Hi, {mainProfile?.firstName || 'User'}!
             </Text>
           </View>
-          <Avatar.Icon
-            size={45}
-            icon="account-heart"
-            style={{ backgroundColor: theme.colors.primaryContainer }}
-            color={theme.colors.primary}
-          />
+          <Avatar.Icon size={45} icon="account-heart" />
         </View>
 
-        <ScrollView
-          contentContainerStyle={[styles.scrollContent, { paddingBottom: 150 }]}
-          showsVerticalScrollIndicator={false}
-        >
+        <ScrollView contentContainerStyle={[styles.scrollContent, { paddingBottom: 150 }]} showsVerticalScrollIndicator={false}>
           <View style={styles.summaryRow}>
-            <Surface style={[styles.summaryCard, { flex: 1.5, backgroundColor: theme.colors.elevation.level1 }]} elevation={1}>
-              <Text variant="labelMedium" style={{ color: theme.colors.onSurfaceVariant, fontFamily: 'Geist-Medium' }}>Today's Progress</Text>
-              <Text variant="headlineSmall" style={{ fontWeight: 'bold', color: theme.colors.onSurface, fontFamily: 'Geist-Bold' }}>
-                {Math.round(stats.progress * 100)}%
-              </Text>
-              <ProgressBar
-                progress={stats.progress}
-                color={theme.colors.primary}
-                style={{ height: 8, borderRadius: 4, marginTop: 8 }}
-              />
+            <Surface style={[styles.summaryCard, { flex: 1.5 }]} elevation={1}>
+              <Text variant="labelMedium">Today's Progress</Text>
+              <Text variant="headlineSmall" style={{ fontWeight: 'bold' }}>{Math.round(stats.progress * 100)}%</Text>
+              <ProgressBar progress={stats.progress} color={theme.colors.primary} style={{ height: 8, borderRadius: 4, marginTop: 8 }} />
             </Surface>
 
             <TouchableOpacity style={{ flex: 1 }} onPress={() => setViewCabinet(true)}>
-              <Surface
-                style={[styles.summaryCard, { backgroundColor: theme.colors.secondaryContainer }]}
-                elevation={1}
-              >
-                <Text variant="labelMedium" style={{ color: theme.colors.onSecondaryContainer, opacity: 0.7, fontFamily: 'Geist-Medium' }}>Cabinet</Text>
-                <Text variant="headlineSmall" style={{ fontWeight: 'bold', color: theme.colors.onSecondaryContainer, fontFamily: 'Geist-Bold' }}>
-                  {stats.grandTotal}
-                </Text>
-                <Text variant="bodySmall" style={{ color: theme.colors.onSecondaryContainer, fontFamily: 'Geist-Regular' }}>View All</Text>
+              <Surface style={[styles.summaryCard, { backgroundColor: theme.colors.secondaryContainer }]} elevation={1}>
+                <Text variant="labelMedium">Cabinet</Text>
+                <Text variant="headlineSmall" style={{ fontWeight: 'bold' }}>{stats.grandTotal}</Text>
+                <Text variant="bodySmall">View All</Text>
               </Surface>
             </TouchableOpacity>
           </View>
 
           {nextMed && (
             <View style={styles.section}>
-              <Text variant="titleMedium" style={[styles.sectionLabel, { color: theme.colors.onSurface, fontFamily: 'Geist-SemiBold' }]}>Next Dose</Text>
+              <Text variant="titleMedium" style={styles.sectionLabel}>Next Dose</Text>
               <Card style={{ borderRadius: 24, backgroundColor: theme.colors.primary }} mode="contained">
                 <Card.Content style={styles.nextCardContent}>
                   <View style={{ flex: 1 }}>
-                    <Text variant="labelLarge" style={{ color: theme.colors.onPrimary, opacity: 0.8, fontFamily: 'Geist-Bold' }}>
-                      {formatTime(nextMed.reminderTime)}
-                    </Text>
-                    <Text variant="headlineSmall" style={{ color: theme.colors.onPrimary, fontWeight: 'bold', fontFamily: 'Geist-Bold' }}>
-                      {nextMed.name}
-                    </Text>
-                    <Text variant="bodyMedium" style={{ color: theme.colors.onPrimary, fontFamily: 'Geist-Regular' }}>
-                      {nextMed.dosage} {nextMed.unit} • {nextMed.category}
-                    </Text>
+                    <Text variant="labelLarge" style={{ color: theme.colors.onPrimary }}>{formatTime(nextMed.reminderTime)}</Text>
+                    <Text variant="headlineSmall" style={{ color: theme.colors.onPrimary, fontWeight: 'bold' }}>{nextMed.name}</Text>
                   </View>
-                  <IconButton icon="clock-fast" containerColor={theme.colors.onPrimary} iconColor={theme.colors.primary} size={28} />
+                  <IconButton icon="clock-fast" containerColor={theme.colors.onPrimary} iconColor={theme.colors.primary} />
                 </Card.Content>
               </Card>
             </View>
           )}
 
           <View style={styles.section}>
-            <Text variant="titleMedium" style={[styles.sectionLabel, { color: theme.colors.onSurface, fontFamily: 'Geist-SemiBold' }]}>Today's Schedule</Text>
-
+            <Text variant="titleMedium" style={styles.sectionLabel}>Today's Schedule</Text>
             {todayMedications.length === 0 ? (
-              <Surface style={[styles.emptyCard, { backgroundColor: theme.colors.surfaceVariant, borderColor: theme.colors.outline }]} elevation={0}>
-                <IconButton icon="pill-off" size={40} style={{ opacity: 0.5 }} iconColor={theme.colors.onSurfaceVariant} />
-                <Text style={[styles.emptyMsg, { color: theme.colors.onSurfaceVariant, fontFamily: 'Geist-Regular' }]}>No medications scheduled.</Text>
-                <Button mode="text" onPress={() => setShowForm(true)} textColor={theme.colors.primary}>Add Medicine</Button>
+              <Surface style={styles.emptyCard} elevation={0}>
+                <Text>No medications scheduled.</Text>
+                <Button onPress={() => setShowForm(true)}>Add Medicine</Button>
               </Surface>
             ) : (
-              [...todayMedications]
-                .sort((a, b) => {
-                  const ta = new Date(a.reminderTime);
-                  const tb = new Date(b.reminderTime);
-                  return (ta.getHours() * 60 + ta.getMinutes()) - (tb.getHours() * 60 + tb.getMinutes());
-                })
-                .map((med) => {
-                  const status = getDoseStatus(med);
-                  const isTaken = status === 'taken';
-                  let icon = isTaken ? 'check-circle' : (status === 'missed' ? 'alert-circle' : 'checkbox-blank-circle-outline');
-                  let iconColor = isTaken ? theme.colors.primary : (status === 'missed' ? theme.colors.error : theme.colors.primary);
-
-                  return (
-                    <Swipeable key={med._id.toHexString()} renderRightActions={() => renderRightActions(med)}>
-                      <Surface 
-                        style={[styles.medItem, { backgroundColor: theme.colors.surface, borderColor: theme.colors.outlineVariant, opacity: isTaken ? 0.7 : 1 }]} 
-                        elevation={1}
-                      >
-                        <View style={styles.timeLine}>
-                          <Text variant="titleMedium" style={[styles.timeLabel, { color: theme.colors.onSurfaceVariant, fontFamily: 'Geist-Bold' }]}>{formatTime(med.reminderTime)}</Text>
-                        </View>
-                        <View style={styles.medDetails}>
-                          <Text variant="titleMedium" style={[styles.medNameText, { color: theme.colors.onSurface, textDecorationLine: isTaken ? 'line-through' : 'none', fontFamily: 'Geist-SemiBold' }]}>{med.name}</Text>
-                          <Text variant="bodySmall" style={{ color: theme.colors.secondary, fontFamily: 'Geist-Regular' }}>{med.dosage} {med.unit} • {med.isInventoryEnabled ? `${med.stock} left` : med.category}</Text>
-                        </View>
-                        <IconButton icon={icon} iconColor={iconColor} size={28} disabled={isTaken} onPress={() => handleTakeMedication(med)} />
-                      </Surface>
-                    </Swipeable>
-                  );
-                })
+              [...todayMedications].sort((a,b) => new Date(a.reminderTime) - new Date(b.reminderTime)).map((med) => {
+                const status = getDoseStatus(med._id);
+                const isTaken = status === 'taken';
+                return (
+                  <Swipeable key={med.idString} renderRightActions={() => renderRightActions(med)}>
+                    <Surface style={[styles.medItem, { opacity: isTaken ? 0.6 : 1 }]} elevation={1}>
+                      <View style={styles.timeLine}>
+                        <Text variant="titleMedium" style={styles.timeLabel}>{formatTime(med.reminderTime)}</Text>
+                      </View>
+                      <View style={styles.medDetails}>
+                        <Text variant="titleMedium" style={{ textDecorationLine: isTaken ? 'line-through' : 'none' }}>{med.name}</Text>
+                        <Text variant="bodySmall">{med.dosage} {med.unit}</Text>
+                      </View>
+                      <IconButton 
+                        icon={isTaken ? 'check-circle' : 'checkbox-blank-circle-outline'} 
+                        disabled={isTaken} 
+                        onPress={() => handleTakeMedication(med)} 
+                      />
+                    </Surface>
+                  </Swipeable>
+                );
+              })
             )}
           </View>
         </ScrollView>
 
-        <FAB
-          icon="plus"
-          label="New Medicine"
-          extended
-          style={[styles.fab, { backgroundColor: theme.colors.primary, bottom: insets.bottom + 16 }]}
-          color={theme.colors.onPrimary}
-          onPress={() => { setEditingId(null); setShowForm(true); }}
-        />
+        <FAB icon="plus" label="New Medicine" extended style={[styles.fab, { bottom: insets.bottom + 16 }]} onPress={() => setShowForm(true)} />
       </View>
     </GestureHandlerRootView>
   );
@@ -342,13 +318,11 @@ const styles = StyleSheet.create({
   section: { marginBottom: 25 },
   sectionLabel: { marginBottom: 12, fontWeight: 'bold', opacity: 0.8 },
   nextCardContent: { flexDirection: 'row', alignItems: 'center', paddingVertical: 8 },
-  medItem: { flexDirection: 'row', alignItems: 'center', padding: 12, borderRadius: 20, marginBottom: 10, borderWidth: 1 },
+  medItem: { flexDirection: 'row', alignItems: 'center', padding: 12, borderRadius: 20, marginBottom: 10, borderWidth: 1, borderColor: '#eee' },
   timeLine: { width: 85 },
   timeLabel: { fontWeight: 'bold' },
   medDetails: { flex: 1 },
-  medNameText: { fontWeight: 'bold' },
-  emptyCard: { padding: 30, alignItems: 'center', borderRadius: 24, borderStyle: 'dashed', borderWidth: 1 },
-  emptyMsg: { textAlign: 'center', marginBottom: 10 },
-  swipeActions: { flexDirection: 'row', alignItems: 'center', paddingLeft: 10, gap: 4 },
+  emptyCard: { padding: 30, alignItems: 'center', borderRadius: 24 },
+  swipeActions: { flexDirection: 'row', alignItems: 'center', paddingLeft: 10 },
   fab: { position: 'absolute', right: 20, borderRadius: 16 }
 });

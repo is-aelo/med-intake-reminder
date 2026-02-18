@@ -7,7 +7,8 @@ import notifee, {
 
 /**
  * Service class for premium medication notifications.
- * Clean, empathetic, and professional.
+ * FIXED: Prevents "Access to invalidated Results objects" by 
+ * converting Realm data to plain strings early.
  */
 class NotificationService {
   constructor() {
@@ -29,7 +30,7 @@ class NotificationService {
   }
 
   /**
-   * Schedules a reminder with a friendly, non-aggressive tone.
+   * Schedules a reminder with defensive ID handling.
    */
   async scheduleMedication(id, name, dosage, date, originalScheduledTime = null) {
     try {
@@ -43,8 +44,20 @@ class NotificationService {
         scheduledTime = now + 10000; 
       }
 
-      // Convert BSON ID to string for Notifee compatibility
-      const stringId = typeof id === 'object' ? id.toHexString() : id;
+      /**
+       * CRITICAL FIX: Convert ID to string immediately.
+       * This prevents "Access to invalidated Results objects" error 
+       * when Realm closes the connection in the background.
+       */
+      let stringId = '';
+      if (id) {
+        if (typeof id === 'string') {
+          stringId = id;
+        } else if (typeof id === 'object') {
+          // Handles both UUID and ObjectId even if the object is being invalidated
+          stringId = id.toString(); 
+        }
+      }
 
       const trigger = {
         type: TriggerType.TIMESTAMP,
@@ -55,14 +68,12 @@ class NotificationService {
       await notifee.createTriggerNotification(
         {
           id: stringId,
-          // Tone: "Empathetic & Premium" instead of "Deadline"
           title: '💊 Time for your health break',
           body: `Hi! It's time for your ${dosage} of ${name}. Staying on track helps you feel your best! ✨`,
           data: {
-            medicationId: stringId,
-            medicationName: name,
-            dosage: dosage,
-            // Keep track of the original schedule for accurate delay reporting
+            medicationId: stringId, // Pass as plain string
+            medicationName: String(name), // Pass as plain string
+            dosage: String(dosage), // Pass as plain string
             scheduledAt: originalScheduledTime || new Date(scheduledTime).toISOString(),
           },
           android: {
@@ -97,7 +108,8 @@ class NotificationService {
   }
 
   /**
-   * Handles the snooze logic while preserving the original scheduled time.
+   * Handles the snooze logic.
+   * Data is extracted from notification.data which are already plain strings.
    */
   async snoozeMedication(notification) {
     try {
@@ -107,14 +119,11 @@ class NotificationService {
 
       const { medicationId, medicationName, dosage, scheduledAt } = notification.data;
       
-      // Fallback values
       const name = medicationName || "Medication";
       const dose = dosage || "1 dose";
-
-      // Schedule for 10 minutes from now
       const snoozeDate = new Date(Date.now() + 10 * 60 * 1000); 
 
-      // We pass the 'scheduledAt' back so the log still reflects the original target time
+      // medicationId here is already a string from the notification payload
       await this.scheduleMedication(medicationId, name, dose, snoozeDate, scheduledAt);
       
       console.log(`[NotificationService] Snoozed: ${name} to ${snoozeDate.toLocaleTimeString()}`);
@@ -123,9 +132,16 @@ class NotificationService {
     }
   }
 
+  /**
+   * Safe cancellation helper.
+   */
   async cancelNotification(id) {
-    const notificationId = typeof id === 'object' ? id.toHexString() : id;
-    await notifee.cancelNotification(notificationId);
+    try {
+      const stringId = (id && typeof id === 'object') ? id.toString() : String(id);
+      await notifee.cancelNotification(stringId);
+    } catch (e) {
+      console.error('[NotificationService] Cancel Error:', e);
+    }
   }
 
   async cancelAll() {

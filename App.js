@@ -1,6 +1,6 @@
 import 'react-native-gesture-handler';
 import React, { useState, createContext, useEffect } from 'react';
-import { StatusBar, View, ActivityIndicator } from 'react-native';
+import { StatusBar, View, ActivityIndicator, AppState } from 'react-native';
 import { PaperProvider, FAB, Portal, Text, useTheme } from 'react-native-paper';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useFonts } from 'expo-font';
@@ -11,7 +11,6 @@ import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 
 // Notifications & Realm
-import * as Notifications from 'expo-notifications';
 import notifee, { EventType } from '@notifee/react-native';
 import { RealmProvider, useQuery, useRealm } from '@realm/react';
 import Realm from 'realm';
@@ -28,15 +27,10 @@ import WelcomeScreen from './src/screens/WelcomeScreen';
 import AddProfileScreen from './src/screens/AddProfileScreen';
 
 // --- SHARED LOGIC FOR SAVING LOGS ---
-/**
- * Shared helper function to process medication actions consistently.
- * Fix: Uses Realm.BSON.UUID to match the provided Schema.
- */
 const performMedicationAction = async (realm, notification, actionId) => {
   const { medicationId, medicationName, scheduledAt } = notification.data;
   
   try {
-    // FIX: Using UUID instead of ObjectId to match src\models\Schemas.js
     const medId = new Realm.BSON.UUID(medicationId);
     
     if (actionId === 'taken') {
@@ -45,7 +39,7 @@ const performMedicationAction = async (realm, notification, actionId) => {
       
       realm.write(() => {
         realm.create('MedicationLog', {
-          _id: new Realm.BSON.UUID(), // Log ID is also a UUID
+          _id: new Realm.BSON.UUID(),
           medicationId: medId,
           medicationName: medication ? medication.name : (medicationName || 'Medication'),
           status: 'taken',
@@ -54,7 +48,6 @@ const performMedicationAction = async (realm, notification, actionId) => {
           delayMinutes: Math.round((now - new Date(scheduledAt)) / 60000),
         });
 
-        // Inventory management
         if (medication && medication.isInventoryEnabled && medication.stock > 0) {
           medication.stock -= 1;
         }
@@ -64,10 +57,8 @@ const performMedicationAction = async (realm, notification, actionId) => {
     
     if (actionId === 'snooze') {
       await NotificationService.snoozeMedication(notification);
-      console.log(`[Action] Snoozed ${medicationName}`);
     }
 
-    // Always dismiss the notification after an action is taken
     await notifee.cancelNotification(notification.id);
   } catch (e) {
     console.error('[Action Handler Error]:', e);
@@ -75,37 +66,36 @@ const performMedicationAction = async (realm, notification, actionId) => {
 };
 
 // --- BACKGROUND EVENT HANDLER ---
-/**
- * Registered outside the component to catch events when the app is closed.
- */
 notifee.onBackgroundEvent(async ({ type, detail }) => {
   const { notification, pressAction } = detail;
 
   if (type === EventType.ACTION_PRESS) {
-    try {
-      const realm = await Realm.open({
-        schema: [Medication, Profile, MedicationLog],
-        schemaVersion: 2,
-        deleteRealmIfMigrationNeeded: true, 
-      });
+    // Buksan ang Realm instance para sa background process
+    const realm = await Realm.open({
+      schema: [Medication, Profile, MedicationLog],
+      schemaVersion: 2,
+      deleteRealmIfMigrationNeeded: true, 
+    });
 
+    try {
       await performMedicationAction(realm, notification, pressAction.id);
-      
-      realm.close(); 
     } catch (error) {
       console.error('[Background Event Error]:', error);
+    } finally {
+      /**
+       * FIX: Importante! I-close lang ang realm kung ang app state ay hindi 'active'.
+       * Kung 'active' ang app, hayaan ang RealmProvider sa UI thread ang mag-handle.
+       */
+      if (AppState.currentState !== 'active') {
+        realm.close();
+      }
     }
   }
 });
 
 const Tab = createBottomTabNavigator();
+export const ThemeContext = createContext({ toggleTheme: () => {}, isDarkMode: false });
 
-export const ThemeContext = createContext({
-  toggleTheme: () => {},
-  isDarkMode: false,
-});
-
-// --- BOTTOM TAB NAVIGATION COMPONENT ---
 function MainTabs() {
   const theme = useTheme();
   const insets = useSafeAreaInsets();
@@ -115,21 +105,13 @@ function MainTabs() {
       screenOptions={{ 
         headerShown: false,
         tabBarActiveTintColor: theme.colors.primary, 
-        tabBarInactiveTintColor: theme.colors.onSurfaceVariant,
         tabBarStyle: { 
           height: 65 + insets.bottom, 
           paddingBottom: insets.bottom > 0 ? insets.bottom : 8,
           paddingTop: 8,
           backgroundColor: theme.colors.surface,
-          borderTopColor: theme.colors.outlineVariant,
-          elevation: 8,
-          borderTopWidth: 1,
         },
-        tabBarLabelStyle: { 
-          fontFamily: 'Geist-Medium', 
-          fontSize: 12,
-          marginBottom: insets.bottom === 0 ? 4 : 0 
-        }
+        tabBarLabelStyle: { fontFamily: 'Geist-Medium', fontSize: 12 }
       }}
     >
       <Tab.Screen 
@@ -137,9 +119,7 @@ function MainTabs() {
         component={HomeScreen} 
         options={{
           tabBarLabel: 'Today',
-          tabBarIcon: ({ color, size }) => (
-            <MaterialCommunityIcons name="pill" color={color} size={size} />
-          ),
+          tabBarIcon: ({ color, size }) => <MaterialCommunityIcons name="pill" color={color} size={size} />,
         }}
       />
       <Tab.Screen 
@@ -147,16 +127,13 @@ function MainTabs() {
         component={HistoryScreen} 
         options={{
           tabBarLabel: 'History',
-          tabBarIcon: ({ color, size }) => (
-            <MaterialCommunityIcons name="history" color={color} size={size} />
-          ),
+          tabBarIcon: ({ color, size }) => <MaterialCommunityIcons name="history" color={color} size={size} />,
         }}
       />
     </Tab.Navigator>
   );
 }
 
-// --- MAIN CONTENT LOGIC ---
 function AppContent() {
   const realm = useRealm();
   const profiles = useQuery(Profile);
@@ -164,7 +141,6 @@ function AppContent() {
   const [hasStartedOnboarding, setHasStartedOnboarding] = useState(false);
   const [isInitializing, setIsInitializing] = useState(true);
 
-  // Listen for Foreground Notification Events
   useEffect(() => {
     const unsubscribe = notifee.onForegroundEvent(async ({ type, detail }) => {
       if (type === EventType.ACTION_PRESS) {
@@ -172,9 +148,7 @@ function AppContent() {
       }
     });
 
-    const timer = setTimeout(() => {
-      setIsInitializing(false);
-    }, 2000); 
+    const timer = setTimeout(() => setIsInitializing(false), 2000); 
 
     return () => {
       unsubscribe();
@@ -188,7 +162,6 @@ function AppContent() {
       await NotificationService.bootstrap();
       setHasStartedOnboarding(true);
     } catch (e) {
-      console.log('Permission error:', e);
       setHasStartedOnboarding(true);
     }
   };
@@ -222,13 +195,7 @@ function AppContent() {
             <Portal>
               <FAB
                 icon={isDarkMode ? 'weather-sunny' : 'weather-night'}
-                style={{ 
-                  position: 'absolute', 
-                  top: 50, 
-                  right: 16, 
-                  backgroundColor: activeTheme.colors.surface,
-                  borderRadius: 12
-                }}
+                style={{ position: 'absolute', top: 50, right: 16, backgroundColor: activeTheme.colors.surface, borderRadius: 12 }}
                 onPress={() => setIsDarkMode(!isDarkMode)}
                 size="small"
               />

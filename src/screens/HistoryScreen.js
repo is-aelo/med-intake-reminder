@@ -1,17 +1,30 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import { View, FlatList, StyleSheet } from 'react-native';
 import { Text, List, Surface, Chip, useTheme } from 'react-native-paper';
 import { useQuery } from '@realm/react';
 import { MedicationLog } from '../models/Schemas';
 
 const HistoryScreen = () => {
-  const theme = useTheme(); // Dito natin kukunin ang Forest/Sage colors
-  const logs = useQuery(MedicationLog).sorted('takenAt', true);
+  const theme = useTheme();
+  
+  const rawLogs = useQuery(MedicationLog).sorted('takenAt', true);
+
+  // FIXED: Ginamit ang .filter() ng JS imbes na .filtered() string ni Realm
+  const safeLogs = useMemo(() => {
+    return rawLogs
+      .filter(log => log.isValid()) // JS check ito, hindi Realm string
+      .map(log => ({
+        _id: log._id.toString(),
+        medicationName: log.medicationName,
+        takenAt: log.takenAt,
+        status: log.status,
+      }));
+  }, [rawLogs]);
 
   const getStatusColor = (status) => {
     switch (status) {
-      case 'taken': return theme.colors.primary; // Forest Green
-      case 'snoozed': return theme.colors.secondary; // Sage
+      case 'taken': return theme.colors.primary;
+      case 'snoozed': return theme.colors.secondary;
       case 'missed': return theme.colors.error; 
       default: return theme.colors.onSurfaceVariant;
     }
@@ -20,26 +33,25 @@ const HistoryScreen = () => {
   return (
     <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
       <View style={[styles.headerContainer, { backgroundColor: theme.colors.surface, borderBottomWidth: 1, borderBottomColor: theme.colors.outlineVariant }]}>
-        <Text variant="headlineMedium" style={{ color: theme.colors.onSurface, fontFamily: 'Geist-Bold' }}>History Log</Text>
-        <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, fontFamily: 'Geist-Regular' }}>Your medication consistency</Text>
+        <Text variant="headlineMedium" style={{ color: theme.colors.onSurface, fontWeight: 'bold' }}>History Log</Text>
+        <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant }}>Your medication consistency</Text>
       </View>
       
-      {logs.length === 0 ? (
+      {safeLogs.length === 0 ? (
         <View style={styles.emptyContainer}>
           <List.Icon icon="clipboard-text-outline" color={theme.colors.outline} />
           <Text variant="bodyLarge" style={{ color: theme.colors.onSurfaceVariant }}>No records found yet.</Text>
         </View>
       ) : (
         <FlatList
-          data={logs}
-          keyExtractor={(item) => item._id.toString()}
+          data={safeLogs}
+          keyExtractor={(item) => item._id}
           renderItem={({ item }) => (
             <Surface style={[styles.card, { backgroundColor: theme.colors.surface }]} elevation={1}>
               <List.Item
                 title={item.medicationName}
-                titleStyle={{ color: theme.colors.onSurface, fontFamily: 'Geist-SemiBold' }}
-                descriptionStyle={{ fontFamily: 'Geist-Regular' }}
-                description={`Taken: ${item.takenAt.toLocaleString()}`}
+                titleStyle={{ color: theme.colors.onSurface, fontWeight: '600' }}
+                description={`Taken: ${item.takenAt ? new Date(item.takenAt).toLocaleString() : 'N/A'}`}
                 left={props => (
                   <View style={styles.iconCircle}>
                     <List.Icon {...props} icon="check-decagram" color={getStatusColor(item.status)} />
@@ -48,7 +60,7 @@ const HistoryScreen = () => {
                 right={() => (
                   <View style={styles.statusContainer}>
                     <Chip 
-                      textStyle={{ color: theme.colors.onPrimary, fontSize: 10, fontFamily: 'Geist-Bold' }} 
+                      textStyle={{ color: '#FFFFFF', fontSize: 10, fontWeight: 'bold' }} 
                       style={{ backgroundColor: getStatusColor(item.status), height: 24 }}
                     >
                       {item.status.toUpperCase()}
