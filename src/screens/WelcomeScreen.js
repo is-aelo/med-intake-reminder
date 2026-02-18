@@ -4,19 +4,22 @@ import { Text, Button, useTheme } from 'react-native-paper';
 
 const { width } = Dimensions.get('window');
 
-// Eto dapat ang laman ng WelcomeScreen. Focus lang sa UI at yung onStart button.
+/**
+ * WelcomeScreen - The first screen users see.
+ * Triggers onStart which now includes the notification permission request in App.js.
+ */
 export default function WelcomeScreen({ onStart }) {
   const theme = useTheme();
 
   return (
     <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
       <View style={styles.content}>
-        {/* Visual Icon */}
+        {/* Visual Icon Section */}
         <View style={[styles.iconContainer, { backgroundColor: theme.colors.primaryContainer }]}>
            <Text style={{ fontSize: 80 }}>💊</Text>
         </View>
 
-        <Text variant="displaySmall" style={styles.title}>
+        <Text variant="displaySmall" style={[styles.title, { color: theme.colors.onSurface }]}>
           Never Miss a Dose
         </Text>
         
@@ -28,7 +31,7 @@ export default function WelcomeScreen({ onStart }) {
       <View style={styles.footer}>
         <Button 
           mode="contained" 
-          onPress={onStart} 
+          onPress={onStart} // This calls handleStartOnboarding in App.js to force permission dialog
           style={styles.button}
           contentStyle={styles.buttonContent}
           labelStyle={{ fontSize: 18, fontWeight: 'bold' }}
@@ -57,6 +60,12 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     marginBottom: 40,
+    // Add a slight elevation for a modern look
+    elevation: 2,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
   },
   title: {
     fontWeight: 'bold',

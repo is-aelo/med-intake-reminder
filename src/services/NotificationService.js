@@ -6,70 +6,82 @@ import notifee, {
 } from '@notifee/react-native';
 
 /**
- * Service class for medication notifications and action handling.
+ * Service class for premium medication notifications.
+ * Clean, empathetic, and professional.
  */
 class NotificationService {
   constructor() {
     this.bootstrap();
   }
 
-  /**
-   * Initializes the notification channel.
-   * Note: Incremented version to v3 to force Android to update channel settings.
-   */
   async bootstrap() {
     await notifee.createChannel({
-      id: 'medication_alarms_v3', // New ID to ensure settings update
-      name: 'Urgent Medication Alarms',
-      description: 'Critical and persistent alerts for medication.',
+      id: 'medication_reminders_premium',
+      name: 'Medication Reminders',
+      description: 'Gentle and professional health reminders.',
       importance: AndroidImportance.HIGH, 
       vibration: true,
-      // LONG VIBRATION: Array of [vibrate, pause] pairs repeated to last ~1 minute
-      vibrationPattern: Array(30).fill([1000, 1000]).flat(), 
+      vibrationPattern: [300, 200, 300, 200], 
       sound: 'default', 
       visibility: AndroidVisibility.PUBLIC,
-      bypassDnd: true, // Attempt to bypass Do Not Disturb
+      bypassDnd: true, 
     });
   }
 
   /**
-   * Schedules a notification with high priority, persistent alert, and alarm category.
+   * Schedules a reminder with a friendly, non-aggressive tone.
    */
-  async scheduleMedication(id, name, dosage, date) {
+  async scheduleMedication(id, name, dosage, date, originalScheduledTime = null) {
     try {
       await notifee.requestPermission();
 
+      const now = Date.now();
+      let scheduledTime = date.getTime();
+
+      // If the time is in the past, push it slightly forward
+      if (scheduledTime <= now) {
+        scheduledTime = now + 10000; 
+      }
+
+      // Convert BSON ID to string for Notifee compatibility
+      const stringId = typeof id === 'object' ? id.toHexString() : id;
+
       const trigger = {
         type: TriggerType.TIMESTAMP,
-        timestamp: date.getTime(),
-        alarmManager: true, // Use exact alarms
+        timestamp: scheduledTime, 
+        alarmManager: true, 
       };
 
       await notifee.createTriggerNotification(
         {
-          id: id,
-          title: '💊 MEDICATION REMINDER',
-          body: `It is time to take your ${name} (${dosage}).`,
+          id: stringId,
+          // Tone: "Empathetic & Premium" instead of "Deadline"
+          title: '💊 Time for your health break',
+          body: `Hi! It's time for your ${dosage} of ${name}. Staying on track helps you feel your best! ✨`,
           data: {
-            medicationId: id,
-            scheduledAt: date.toISOString(),
+            medicationId: stringId,
+            medicationName: name,
+            dosage: dosage,
+            // Keep track of the original schedule for accurate delay reporting
+            scheduledAt: originalScheduledTime || new Date(scheduledTime).toISOString(),
           },
           android: {
-            channelId: 'medication_alarms_v3',
-            category: AndroidCategory.ALARM, // Categorize as Alarm for system priority
+            channelId: 'medication_reminders_premium',
+            category: AndroidCategory.REMINDER,
             importance: AndroidImportance.HIGH,
             priority: 'high',
-            fullScreenIntent: true, // Push to front even if device is locked
-            autoCancel: false,      // User must interact with buttons
-            ongoing: true,         // Prevent notification from being swiped away
+            fullScreenIntent: false, 
+            autoCancel: true,        
+            ongoing: false,           
+            
             pressAction: { id: 'default' },
             actions: [
               {
-                title: '✅ MARK AS TAKEN',
+                title: '✅ Mark as Taken',
                 pressAction: { id: 'taken' },
               },
               {
-                title: '⏰ SNOOZE (10 MIN)',
+                title: '⏰ Snooze (10m)',
                 pressAction: { id: 'snooze' },
               },
             ],
@@ -78,32 +90,42 @@ class NotificationService {
         trigger,
       );
 
-      console.log(`[NotificationService] Scheduled: ${name} at ${date.toLocaleTimeString()}`);
+      console.log(`[NotificationService] Scheduled: ${name} for ${new Date(scheduledTime).toLocaleTimeString()}`);
     } catch (error) {
       console.error('[NotificationService] Scheduling Error:', error);
     }
   }
 
   /**
-   * Re-schedules the notification for 10 minutes later.
+   * Handles the snooze logic while preserving the original scheduled time.
    */
   async snoozeMedication(notification) {
-    const { medicationId } = notification.data;
-    
-    // Safely extract name and dosage from body text
-    const bodyText = notification.body || "";
-    const name = bodyText.includes('your ') ? bodyText.split('your ')[1].split(' (')[0] : "Medication";
-    const dosageMatch = bodyText.match(/\(([^)]+)\)/);
-    const dosage = dosageMatch ? dosageMatch[1] : "";
+    try {
+      if (notification.id) {
+        await notifee.cancelNotification(notification.id);
+      }
 
-    const snoozeDate = new Date(Date.now() + 10 * 60 * 1000); 
+      const { medicationId, medicationName, dosage, scheduledAt } = notification.data;
+      
+      // Fallback values
+      const name = medicationName || "Medication";
+      const dose = dosage || "1 dose";
 
-    await this.scheduleMedication(medicationId, name, dosage, snoozeDate);
-    await notifee.cancelNotification(notification.id);
+      // Schedule for 10 minutes from now
+      const snoozeDate = new Date(Date.now() + 10 * 60 * 1000); 
+
+      // We pass the 'scheduledAt' back so the log still reflects the original target time
+      await this.scheduleMedication(medicationId, name, dose, snoozeDate, scheduledAt);
+      
+      console.log(`[NotificationService] Snoozed: ${name} to ${snoozeDate.toLocaleTimeString()}`);
+    } catch (error) {
+      console.error('[NotificationService] Snooze Error:', error);
+    }
   }
 
   async cancelNotification(id) {
-    await notifee.cancelNotification(id);
+    const notificationId = typeof id === 'object' ? id.toHexString() : id;
+    await notifee.cancelNotification(notificationId);
   }
 
   async cancelAll() {

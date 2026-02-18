@@ -1,6 +1,6 @@
 // src/screens/HomeScreen.js
 import React, { useState, useMemo } from 'react';
-import { View, StyleSheet, ScrollView, Alert, TouchableOpacity, StatusBar } from 'react-native';
+import { View, StyleSheet, ScrollView, Alert, TouchableOpacity, StatusBar, Platform } from 'react-native';
 import { Text, FAB, useTheme, Card, IconButton, Surface, Avatar, ProgressBar, Button } from 'react-native-paper';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Swipeable, GestureHandlerRootView } from 'react-native-gesture-handler';
@@ -9,6 +9,9 @@ import * as Realm from 'realm';
 
 // Realm Models
 import { Medication, Profile, MedicationLog } from '../models/Schemas';
+
+// Services
+import NotificationService from '../services/NotificationService';
 
 // Components
 import MedicationForm from './MedicationForm';
@@ -83,15 +86,20 @@ export default function HomeScreen() {
 
   const stats = useMemo(() => {
     const total = todayMedications.length;
-    const takenToday = logs.filtered(
-      'status == "taken" AND takenAt >= $0 AND takenAt < $1',
-      todayStart,
-      tomorrowStart
-    ).length;
+    const takenTodayCount = todayMedications.reduce((count, med) => {
+      const isTaken = logs.filtered(
+        'medicationId == $0 AND status == "taken" AND takenAt >= $1 AND takenAt < $2',
+        med._id,
+        todayStart,
+        tomorrowStart
+      ).length > 0;
+      return isTaken ? count + 1 : count;
+    }, 0);
+
     return {
       total,
-      taken: takenToday,
-      progress: total > 0 ? takenToday / total : 0,
+      taken: takenTodayCount,
+      progress: total > 0 ? takenTodayCount / total : 0,
       grandTotal: allMedications.length,
     };
   }, [todayMedications, logs, todayStart, tomorrowStart, allMedications]);
@@ -111,10 +119,12 @@ export default function HomeScreen() {
   const handleTakeMedication = (med) => {
     if (getDoseStatus(med) === 'taken') return;
     try {
+      // 1. Cancel the notification banner if it exists
+      NotificationService.cancelNotification(med._id);
+
+      // 2. Log the medication as taken
       realm.write(() => {
         const currentTime = new Date();
-        
-        // Compute scheduled time for today
         const scheduledDate = new Date(med.reminderTime);
         scheduledDate.setFullYear(currentTime.getFullYear(), currentTime.getMonth(), currentTime.getDate());
         
@@ -123,7 +133,7 @@ export default function HomeScreen() {
         realm.create('MedicationLog', {
           _id: new Realm.BSON.UUID(),
           medicationId: med._id,
-          medicationName: med.name, // FIXED: Added missing required property
+          medicationName: med.name,
           status: 'taken',
           scheduledAt: scheduledDate,
           takenAt: currentTime,
@@ -197,10 +207,10 @@ export default function HomeScreen() {
         
         <View style={[styles.profileHeader, { paddingTop: insets.top + 10 }]}>
           <View>
-            <Text variant="labelLarge" style={{ color: theme.colors.secondary, letterSpacing: 1 }}>
+            <Text variant="labelLarge" style={{ color: theme.colors.secondary, letterSpacing: 1, fontFamily: 'Geist-Bold' }}>
               {todayString.toUpperCase()}
             </Text>
-            <Text variant="headlineSmall" style={[styles.userName, { color: theme.colors.onSurface }]}>
+            <Text variant="headlineSmall" style={[styles.userName, { color: theme.colors.onSurface, fontFamily: 'Geist-Bold' }]}>
               Hi, {mainProfile?.firstName || 'User'}!
             </Text>
           </View>
@@ -213,19 +223,19 @@ export default function HomeScreen() {
         </View>
 
         <ScrollView
-          contentContainerStyle={[styles.scrollContent, { paddingBottom: insets.bottom + 100 }]}
+          contentContainerStyle={[styles.scrollContent, { paddingBottom: 150 }]}
           showsVerticalScrollIndicator={false}
         >
           <View style={styles.summaryRow}>
             <Surface style={[styles.summaryCard, { flex: 1.5, backgroundColor: theme.colors.elevation.level1 }]} elevation={1}>
-              <Text variant="labelMedium" style={{ color: theme.colors.onSurfaceVariant }}>Today's Progress</Text>
-              <Text variant="headlineSmall" style={{ fontWeight: 'bold', color: theme.colors.onSurface }}>
+              <Text variant="labelMedium" style={{ color: theme.colors.onSurfaceVariant, fontFamily: 'Geist-Medium' }}>Today's Progress</Text>
+              <Text variant="headlineSmall" style={{ fontWeight: 'bold', color: theme.colors.onSurface, fontFamily: 'Geist-Bold' }}>
                 {Math.round(stats.progress * 100)}%
               </Text>
               <ProgressBar
                 progress={stats.progress}
                 color={theme.colors.primary}
-                style={{ height: 6, borderRadius: 3, marginTop: 8 }}
+                style={{ height: 8, borderRadius: 4, marginTop: 8 }}
               />
             </Surface>
 
@@ -234,28 +244,28 @@ export default function HomeScreen() {
                 style={[styles.summaryCard, { backgroundColor: theme.colors.secondaryContainer }]}
                 elevation={1}
               >
-                <Text variant="labelMedium" style={{ color: theme.colors.onSecondaryContainer, opacity: 0.7 }}>Cabinet</Text>
-                <Text variant="headlineSmall" style={{ fontWeight: 'bold', color: theme.colors.onSecondaryContainer }}>
+                <Text variant="labelMedium" style={{ color: theme.colors.onSecondaryContainer, opacity: 0.7, fontFamily: 'Geist-Medium' }}>Cabinet</Text>
+                <Text variant="headlineSmall" style={{ fontWeight: 'bold', color: theme.colors.onSecondaryContainer, fontFamily: 'Geist-Bold' }}>
                   {stats.grandTotal}
                 </Text>
-                <Text variant="bodySmall" style={{ color: theme.colors.onSecondaryContainer }}>View All →</Text>
+                <Text variant="bodySmall" style={{ color: theme.colors.onSecondaryContainer, fontFamily: 'Geist-Regular' }}>View All</Text>
               </Surface>
             </TouchableOpacity>
           </View>
 
           {nextMed && (
             <View style={styles.section}>
-              <Text variant="titleMedium" style={[styles.sectionLabel, { color: theme.colors.onSurface }]}>Next Dose</Text>
+              <Text variant="titleMedium" style={[styles.sectionLabel, { color: theme.colors.onSurface, fontFamily: 'Geist-SemiBold' }]}>Next Dose</Text>
               <Card style={{ borderRadius: 24, backgroundColor: theme.colors.primary }} mode="contained">
                 <Card.Content style={styles.nextCardContent}>
                   <View style={{ flex: 1 }}>
-                    <Text variant="labelLarge" style={{ color: theme.colors.onPrimary, opacity: 0.8 }}>
+                    <Text variant="labelLarge" style={{ color: theme.colors.onPrimary, opacity: 0.8, fontFamily: 'Geist-Bold' }}>
                       {formatTime(nextMed.reminderTime)}
                     </Text>
-                    <Text variant="headlineSmall" style={{ color: theme.colors.onPrimary, fontWeight: 'bold' }}>
+                    <Text variant="headlineSmall" style={{ color: theme.colors.onPrimary, fontWeight: 'bold', fontFamily: 'Geist-Bold' }}>
                       {nextMed.name}
                     </Text>
-                    <Text variant="bodyMedium" style={{ color: theme.colors.onPrimary }}>
+                    <Text variant="bodyMedium" style={{ color: theme.colors.onPrimary, fontFamily: 'Geist-Regular' }}>
                       {nextMed.dosage} {nextMed.unit} • {nextMed.category}
                     </Text>
                   </View>
@@ -266,12 +276,12 @@ export default function HomeScreen() {
           )}
 
           <View style={styles.section}>
-            <Text variant="titleMedium" style={[styles.sectionLabel, { color: theme.colors.onSurface }]}>Today's Schedule</Text>
+            <Text variant="titleMedium" style={[styles.sectionLabel, { color: theme.colors.onSurface, fontFamily: 'Geist-SemiBold' }]}>Today's Schedule</Text>
 
             {todayMedications.length === 0 ? (
               <Surface style={[styles.emptyCard, { backgroundColor: theme.colors.surfaceVariant, borderColor: theme.colors.outline }]} elevation={0}>
                 <IconButton icon="pill-off" size={40} style={{ opacity: 0.5 }} iconColor={theme.colors.onSurfaceVariant} />
-                <Text style={[styles.emptyMsg, { color: theme.colors.onSurfaceVariant }]}>No medications scheduled for today.</Text>
+                <Text style={[styles.emptyMsg, { color: theme.colors.onSurfaceVariant, fontFamily: 'Geist-Regular' }]}>No medications scheduled.</Text>
                 <Button mode="text" onPress={() => setShowForm(true)} textColor={theme.colors.primary}>Add Medicine</Button>
               </Surface>
             ) : (
@@ -290,15 +300,15 @@ export default function HomeScreen() {
                   return (
                     <Swipeable key={med._id.toHexString()} renderRightActions={() => renderRightActions(med)}>
                       <Surface 
-                        style={[styles.medItem, { backgroundColor: theme.colors.elevation.level1, borderColor: theme.colors.outlineVariant, opacity: isTaken ? 0.6 : 1 }]} 
-                        elevation={0}
+                        style={[styles.medItem, { backgroundColor: theme.colors.surface, borderColor: theme.colors.outlineVariant, opacity: isTaken ? 0.7 : 1 }]} 
+                        elevation={1}
                       >
                         <View style={styles.timeLine}>
-                          <Text variant="titleMedium" style={[styles.timeLabel, { color: theme.colors.onSurfaceVariant }]}>{formatTime(med.reminderTime)}</Text>
+                          <Text variant="titleMedium" style={[styles.timeLabel, { color: theme.colors.onSurfaceVariant, fontFamily: 'Geist-Bold' }]}>{formatTime(med.reminderTime)}</Text>
                         </View>
                         <View style={styles.medDetails}>
-                          <Text variant="titleMedium" style={[styles.medNameText, { color: theme.colors.onSurface, textDecorationLine: isTaken ? 'line-through' : 'none' }]}>{med.name}</Text>
-                          <Text variant="bodySmall" style={{ color: theme.colors.secondary }}>{med.dosage} {med.unit} • {med.isInventoryEnabled ? `${med.stock} left` : med.category}</Text>
+                          <Text variant="titleMedium" style={[styles.medNameText, { color: theme.colors.onSurface, textDecorationLine: isTaken ? 'line-through' : 'none', fontFamily: 'Geist-SemiBold' }]}>{med.name}</Text>
+                          <Text variant="bodySmall" style={{ color: theme.colors.secondary, fontFamily: 'Geist-Regular' }}>{med.dosage} {med.unit} • {med.isInventoryEnabled ? `${med.stock} left` : med.category}</Text>
                         </View>
                         <IconButton icon={icon} iconColor={iconColor} size={28} disabled={isTaken} onPress={() => handleTakeMedication(med)} />
                       </Surface>
@@ -313,7 +323,7 @@ export default function HomeScreen() {
           icon="plus"
           label="New Medicine"
           extended
-          style={[styles.fab, { backgroundColor: theme.colors.primary, bottom: insets.bottom + 20 }]}
+          style={[styles.fab, { backgroundColor: theme.colors.primary, bottom: insets.bottom + 16 }]}
           color={theme.colors.onPrimary}
           onPress={() => { setEditingId(null); setShowForm(true); }}
         />
