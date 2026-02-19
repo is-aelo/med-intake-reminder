@@ -1,70 +1,177 @@
+// src/screens/MedicationForm.js
 import React, { useState, useEffect, useMemo } from 'react';
-import { View, StyleSheet, ScrollView, KeyboardAvoidingView, Platform, StatusBar } from 'react-native';
-import { Text, Button, useTheme, IconButton, TouchableRipple, SegmentedButtons, Surface, Switch } from 'react-native-paper';
+import {
+  View,
+  StyleSheet,
+  ScrollView,
+  KeyboardAvoidingView,
+  Platform,
+  StatusBar,
+  TouchableOpacity,
+} from 'react-native';
+import {
+  Text,
+  Button,
+  useTheme,
+  IconButton,
+  TouchableRipple,
+  SegmentedButtons,
+  Surface,
+  Switch,
+  Chip,
+} from 'react-native-paper';
+import { MaterialCommunityIcons } from '@expo/vector-icons';
 
-// Realm Imports
+// Realm
 import { useRealm, useQuery } from '@realm/react';
-import { Profile, Medication } from '../models/Schemas';
-import * as Realm from 'realm';
+import Realm from 'realm';
+import { Profile, Medication, Frequency } from '../models/Schemas';
 
-// Service Import
+// Service
 import NotificationService from '../services/NotificationService';
 
 // Components
 import { FormLabel, ModernInput } from '../components/FormInput';
 import { SelectionMenu } from '../components/SelectionMenu';
-import { TimeSelector, DateSelector } from '../components/TimeSelector'; 
+import { TimeSelector, DateSelector } from '../components/TimeSelector';
 import { StatusModal } from '../components/StatusModal';
 import { ScreenHeader } from '../components/ScreenHeader';
 
 // Constants & Helpers
-import { 
-  UNITS, 
-  CATEGORIES, 
-  HOURLY_OPTIONS, 
-  getFilteredDayOptions, 
+import {
+  UNITS,
+  CATEGORIES,
+  HOURLY_OPTIONS,
+  getFilteredDayOptions,
   getScheduleSummary,
   formatDate,
-  formatTime 
+  formatTime,
 } from '../constants/medicationOptions';
 
-export default function AddMedication({ onBack, medicationId = null }) {
+// ─────────────────────────────────────────────
+// HELPERS
+// ─────────────────────────────────────────────
+
+const computeEndDate = (startDate, duration, isPermanent) => {
+  if (isPermanent) return null;
+  const end = new Date(startDate);
+  end.setDate(end.getDate() + (parseInt(duration) || 7));
+  return end;
+};
+
+const toFrequencyConstant = (formFrequency) => {
+  switch (formFrequency) {
+    case 'hourly':   return Frequency.EVERY_X_HOURS;
+    case 'interval': return Frequency.SPECIFIC_DAYS;
+    case 'daily':
+    default:         return Frequency.DAILY;
+  }
+};
+
+const fromFrequencyConstant = (schemaFrequency) => {
+  switch (schemaFrequency) {
+    case Frequency.EVERY_X_HOURS: return 'hourly';
+    case Frequency.SPECIFIC_DAYS: return 'interval';
+    case Frequency.DAILY:
+    default:                      return 'daily';
+  }
+};
+
+// Converts a { hour, minute } slot to a Date object (today's date at that time)
+const slotToDate = ({ hour, minute }) => {
+  const d = new Date();
+  d.setHours(hour, minute, 0, 0);
+  return d;
+};
+
+/**
+ * Auto-generates all time slots for a 24-hour period given a start time
+ * and an interval in hours.
+ *
+ * Example: start 16:00 (4 PM), every 12 hours → [{ hour: 16, minute: 0 }, { hour: 4, minute: 0 }]
+ * Example: start 08:00, every 8 hours → [08:00, 16:00, 00:00]
+ */
+const generateHourlySlots = (startHour, startMinute, intervalHours) => {
+  if (!intervalHours || intervalHours <= 0) return [];
+  const totalSlots = Math.floor(24 / intervalHours);
+  const slots = [];
+  for (let i = 0; i < totalSlots; i++) {
+    const totalMinutes = startHour * 60 + startMinute + i * intervalHours * 60;
+    slots.push({
+      hour: Math.floor(totalMinutes / 60) % 24,
+      minute: totalMinutes % 60,
+    });
+  }
+  return slots;
+};
+
+// ─────────────────────────────────────────────
+// DEFAULT FORM STATE
+// ─────────────────────────────────────────────
+
+const DEFAULT_TIME = { hour: 8, minute: 0 };
+
+const defaultForm = {
+  name: '',
+  dosage: '',
+  unit: 'mg',
+  category: 'Tablet',
+  instructions: '',
+  isPermanent: true,
+  duration: '7',
+  frequency: 'daily',
+  intervalValue: '8',       // default to every 8 hours for hourly mode
+  startDate: new Date(),
+  isInventoryEnabled: false,
+  stock: '0',
+  reorderLevel: '5',
+  isAdjustable: false,
+  times: [DEFAULT_TIME],    // used for daily/interval modes
+};
+
+// ─────────────────────────────────────────────
+// COMPONENT
+// ─────────────────────────────────────────────
+
+export default function MedicationForm({ onBack, medicationId = null }) {
   const theme = useTheme();
   const realm = useRealm();
   const profiles = useQuery(Profile);
   const mainProfile = profiles.filtered('isMain == true')[0];
-
   const medications = useQuery(Medication);
+
   const existingMed = useMemo(() => {
     if (!medicationId) return null;
     try {
-      const targetId = typeof medicationId === 'string' ? new Realm.BSON.UUID(medicationId) : medicationId;
+      const targetId =
+        typeof medicationId === 'string'
+          ? new Realm.BSON.UUID(medicationId)
+          : medicationId;
       return medications.filtered('_id == $0', targetId)[0];
-    } catch (e) {
+    } catch {
       return null;
     }
   }, [medicationId, medications]);
 
-  const [form, setForm] = useState({
-    name: '',
-    dosage: '',
-    unit: 'mg',
-    category: 'Tablet',
-    isPermanent: true, 
-    duration: '7',     
-    frequency: 'daily', 
-    intervalValue: '1', 
-    startDate: new Date(), 
-    time: new Date(),
-    isInventoryEnabled: false,
-    stock: '0',        
-    reorderLevel: '5',
-    isAdjustable: false, // New Smart Logic field
-  });
+  const isEditMode = !!existingMed;
+
+  const [form, setForm] = useState(defaultForm);
+
+  // ── HOURLY MODE: single start time picker ───
+  // The user picks ONE start time. All other slots are auto-generated.
+  const [hourlyStartTime, setHourlyStartTime] = useState(DEFAULT_TIME);
+
+  // ── DAILY/INTERVAL MODE: multi-slot picker ──
+  const [timePickerValue, setTimePickerValue] = useState(slotToDate(DEFAULT_TIME));
+  const [editingSlotIndex, setEditingSlotIndex] = useState(-1);
+
+  // Which mode the time picker is serving: 'hourly_start' | 'slot'
+  const [timePickerMode, setTimePickerMode] = useState('slot');
 
   const [menuVisible, setMenuVisible] = useState({ unit: false, category: false, interval: false });
   const [pickerVisible, setPickerVisible] = useState({ time: false, date: false });
-  const [modalType, setModalType] = useState(null); 
+  const [modalType, setModalType] = useState(null);
+  const [isSaving, setIsSaving] = useState(false);
 
   const inputThemeProps = {
     cursorColor: theme.colors.primary,
@@ -72,135 +179,269 @@ export default function AddMedication({ onBack, medicationId = null }) {
     selectionHandleColor: theme.colors.primary,
   };
 
+  // ── AUTO-GENERATED SLOTS (hourly mode only) ─
+  // Recomputes whenever the start time or interval changes.
+  const generatedHourlySlots = useMemo(() => {
+    if (form.frequency !== 'hourly') return [];
+    return generateHourlySlots(
+      hourlyStartTime.hour,
+      hourlyStartTime.minute,
+      parseInt(form.intervalValue) || 8,
+    );
+  }, [form.frequency, form.intervalValue, hourlyStartTime]);
+
+  // ── POPULATE FORM IN EDIT MODE ──────────────
+
   useEffect(() => {
     if (existingMed) {
+      const freq = fromFrequencyConstant(existingMed.frequency);
+      const existingTimes = existingMed.schedules.map((s) => ({ hour: s.hour, minute: s.minute }));
+
       setForm({
-        name: existingMed.name || '',
-        dosage: String(existingMed.dosage || ''),
-        unit: existingMed.unit || 'mg',
-        category: existingMed.category || 'Tablet',
+        name: existingMed.name ?? '',
+        dosage: String(existingMed.dosage ?? ''),
+        unit: existingMed.unit ?? 'mg',
+        category: existingMed.category ?? 'Tablet',
+        instructions: existingMed.instructions ?? '',
         isPermanent: existingMed.isPermanent ?? true,
         duration: existingMed.duration ? String(existingMed.duration) : '7',
-        frequency: String(existingMed.frequency || 'daily').toLowerCase(),
-        intervalValue: existingMed.intervalValue ? String(existingMed.intervalValue) : '1',
+        frequency: freq,
+        intervalValue: existingMed.intervalHours ? String(existingMed.intervalHours) : '8',
         startDate: new Date(existingMed.startDate),
-        time: new Date(existingMed.reminderTime),
-        isInventoryEnabled: existingMed.isInventoryEnabled || false,
-        stock: String(existingMed.stock || '0'),
-        reorderLevel: String(existingMed.reorderLevel || '5'),
-        isAdjustable: existingMed.isAdjustable || false,
+        isInventoryEnabled: existingMed.isInventoryEnabled ?? false,
+        stock: String(existingMed.stock ?? '0'),
+        reorderLevel: String(existingMed.reorderLevel ?? '5'),
+        isAdjustable: existingMed.isAdjustable ?? false,
+        times: existingTimes,
       });
+
+      // In hourly edit mode, the first slot IS the start time
+      if (freq === 'hourly' && existingTimes.length > 0) {
+        setHourlyStartTime(existingTimes[0]);
+      }
     }
   }, [existingMed]);
 
-  const updateForm = (key, value) => setForm(prev => ({ ...prev, [key]: value }));
-  const toggleMenu = (key, isOpen) => setMenuVisible(prev => ({ ...prev, [key]: isOpen }));
-  const togglePicker = (key, isOpen) => setPickerVisible(prev => ({ ...prev, [key]: isOpen }));
+  // ── FORM HELPERS ────────────────────────────
 
-  const handleSave = async () => {
-    if (form.name.trim() === '' || !form.dosage || parseFloat(form.dosage) <= 0) {
-      setModalType('emptyFields');
+  const updateForm = (key, value) => setForm((prev) => ({ ...prev, [key]: value }));
+  const toggleMenu = (key, isOpen) => setMenuVisible((prev) => ({ ...prev, [key]: isOpen }));
+  const togglePicker = (key, isOpen) => setPickerVisible((prev) => ({ ...prev, [key]: isOpen }));
+
+  // ── TIME PICKER OPENERS ─────────────────────
+
+  const openHourlyStartPicker = () => {
+    setTimePickerMode('hourly_start');
+    setTimePickerValue(slotToDate(hourlyStartTime));
+    togglePicker('time', true);
+  };
+
+  const openAddTimePicker = () => {
+    setTimePickerMode('slot');
+    setEditingSlotIndex(-1);
+    setTimePickerValue(slotToDate(DEFAULT_TIME));
+    togglePicker('time', true);
+  };
+
+  const openEditTimePicker = (index) => {
+    setTimePickerMode('slot');
+    setEditingSlotIndex(index);
+    setTimePickerValue(slotToDate(form.times[index]));
+    togglePicker('time', true);
+  };
+
+  // ── TIME PICKER CONFIRM ─────────────────────
+
+  const handleTimeConfirm = (date) => {
+    if (!date) return;
+
+    if (timePickerMode === 'hourly_start') {
+      // Just update the start time — slots are auto-generated by useMemo
+      setHourlyStartTime({ hour: date.getHours(), minute: date.getMinutes() });
       return;
     }
-    if (!mainProfile) return;
+
+    // daily/interval slot management
+    const slot = { hour: date.getHours(), minute: date.getMinutes() };
+    const isDuplicate = form.times.some(
+      (t, i) => i !== editingSlotIndex && t.hour === slot.hour && t.minute === slot.minute,
+    );
+    if (isDuplicate) return;
+
+    if (editingSlotIndex >= 0) {
+      const updated = [...form.times];
+      updated[editingSlotIndex] = slot;
+      updateForm('times', updated);
+    } else {
+      updateForm('times', [...form.times, slot]);
+    }
+
+    setEditingSlotIndex(-1);
+  };
+
+  const removeTimeSlot = (index) => {
+    updateForm('times', form.times.filter((_, i) => i !== index));
+  };
+
+  // ── VALIDATION ──────────────────────────────
+
+  const validate = () => {
+    if (!form.name.trim() || !form.dosage || parseFloat(form.dosage) <= 0) {
+      setModalType('emptyFields');
+      return false;
+    }
+    if (form.frequency !== 'hourly' && form.times.length === 0) {
+      setModalType('noTimes');
+      return false;
+    }
+    if (!mainProfile) {
+      console.error('[MedicationForm] No main profile found.');
+      return false;
+    }
+    return true;
+  };
+
+  // ── SAVE ────────────────────────────────────
+
+  const handleSave = async () => {
+    if (!validate()) return;
+    setIsSaving(true);
 
     try {
-      let savedId;
-      let finalReminderTime = new Date(form.startDate);
-      finalReminderTime.setHours(form.time.getHours(), form.time.getMinutes(), 0, 0);
+      const frequencyConstant = toFrequencyConstant(form.frequency);
+      const intervalHours = form.frequency === 'hourly' ? parseInt(form.intervalValue) || 8 : null;
+      const endDate = computeEndDate(form.startDate, form.duration, form.isPermanent);
+      const now = new Date();
+
+      // For hourly mode: use the auto-generated slots derived from start time + interval.
+      // For daily/interval mode: use the manually managed times array.
+      const finalTimes =
+        form.frequency === 'hourly' ? generatedHourlySlots : form.times;
+
+      const scheduleData = finalTimes.map((t) => ({
+        hour: t.hour,
+        minute: t.minute,
+        notificationId: '',
+        days: [],
+        isActive: true,
+      }));
+
+      let savedMedication = null;
 
       realm.write(() => {
         const medData = {
-          name: form.name,
+          name: form.name.trim(),
           dosage: form.dosage,
           unit: form.unit,
           category: form.category,
+          instructions: form.instructions.trim() || null,
           isPermanent: form.isPermanent,
           duration: form.isPermanent ? null : form.duration,
-          frequency: form.frequency,
+          frequency: frequencyConstant,
+          intervalHours,
           intervalValue: form.intervalValue,
           startDate: form.startDate,
-          reminderTime: finalReminderTime,
+          endDate,
           isActive: true,
           isInventoryEnabled: form.isInventoryEnabled,
           stock: parseInt(form.stock) || 0,
           reorderLevel: parseInt(form.reorderLevel) || 5,
           isAdjustable: form.isAdjustable,
+          updatedAt: now,
         };
 
-        if (existingMed) {
-          savedId = existingMed._id.toHexString();
+        if (isEditMode) {
           Object.assign(existingMed, medData);
+          existingMed.schedules = scheduleData;
+          savedMedication = existingMed;
         } else {
-          const newMedication = realm.create('Medication', {
+          savedMedication = realm.create('Medication', {
             _id: new Realm.BSON.UUID(),
             ...medData,
-            createdAt: new Date(),
+            schedules: scheduleData,
+            nextOccurrence: null,
+            createdAt: now,
           });
-          savedId = newMedication._id.toHexString();
-          mainProfile.medications.push(newMedication);
+          mainProfile.medications.push(savedMedication);
         }
       });
 
-      if (existingMed) {
-        await NotificationService.cancelNotification(savedId);
+      if (isEditMode) {
+        await NotificationService.cancelMedicationAlarms(existingMed);
       }
-      
-      await NotificationService.scheduleMedication(
-        savedId,
-        form.name,
-        `${form.dosage} ${form.unit}`,
-        finalReminderTime
-      );
+
+      await NotificationService.scheduleMedicationAlarms(realm, savedMedication);
+
+      const nextOccurrence = NotificationService.computeNextOccurrence(savedMedication);
+      if (nextOccurrence) {
+        realm.write(() => {
+          savedMedication.nextOccurrence = nextOccurrence;
+        });
+      }
 
       onBack();
     } catch (error) {
-      console.error("Failed to save and schedule:", error);
+      console.error('[MedicationForm] Save failed:', error);
+    } finally {
+      setIsSaving(false);
     }
   };
+
+  // ─────────────────────────────────────────────
+  // RENDER
+  // ─────────────────────────────────────────────
 
   return (
     <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
       <StatusBar barStyle="dark-content" backgroundColor="transparent" translucent />
-      <ScreenHeader title={medicationId ? "Edit Medication" : "New Medication"} onBack={onBack} />
+      <ScreenHeader
+        title={isEditMode ? 'Edit Medication' : 'New Medication'}
+        onBack={onBack}
+      />
 
-      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={{ flex: 1 }}>
-        <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
-          
-          {/* Medicine Details Card */}
+      <KeyboardAvoidingView
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        style={{ flex: 1 }}
+      >
+        <ScrollView
+          contentContainerStyle={styles.scrollContent}
+          showsVerticalScrollIndicator={false}
+        >
+
+          {/* ── MEDICINE DETAILS ── */}
           <Surface style={[styles.card, { backgroundColor: theme.colors.surface }]} elevation={1}>
             <View style={styles.cardHeader}>
-               <IconButton icon="pill" size={20} iconColor={theme.colors.primary} />
-               <Text variant="titleMedium" style={styles.cardTitle}>Medicine Details</Text>
+              <IconButton icon="pill" size={20} iconColor={theme.colors.primary} />
+              <Text variant="titleMedium" style={styles.cardTitle}>Medicine Details</Text>
             </View>
-            
+
             <View style={styles.group}>
               <FormLabel label="Medicine Name" />
-              <ModernInput 
+              <ModernInput
                 {...inputThemeProps}
-                placeholder="e.g. Tempra Syrup" 
-                value={form.name} 
-                onChangeText={(val) => updateForm('name', val)} 
+                placeholder="e.g. Amoxicillin"
+                value={form.name}
+                onChangeText={(val) => updateForm('name', val)}
               />
             </View>
 
             <View style={styles.row}>
               <View style={{ flex: 1.2 }}>
                 <FormLabel label="Dose Amount" />
-                <ModernInput 
+                <ModernInput
                   {...inputThemeProps}
-                  placeholder="5" 
-                  keyboardType="numeric" 
-                  value={form.dosage} 
-                  onChangeText={(val) => updateForm('dosage', val)} 
+                  placeholder="500"
+                  keyboardType="numeric"
+                  value={form.dosage}
+                  onChangeText={(val) => updateForm('dosage', val)}
                 />
               </View>
               <View style={{ flex: 1 }}>
                 <FormLabel label="Unit" />
-                <SelectionMenu 
+                <SelectionMenu
                   visible={menuVisible.unit}
                   onOpen={() => toggleMenu('unit', true)}
-                  onDismiss={(val) => { toggleMenu('unit', false); if(val) updateForm('unit', val); }}
+                  onDismiss={(val) => { toggleMenu('unit', false); if (val) updateForm('unit', val); }}
                   value={form.unit}
                   options={UNITS}
                 />
@@ -208,26 +449,253 @@ export default function AddMedication({ onBack, medicationId = null }) {
             </View>
 
             <View style={styles.group}>
-              <FormLabel label="Medicine Category" />
-              <SelectionMenu 
+              <FormLabel label="Category" />
+              <SelectionMenu
                 visible={menuVisible.category}
                 onOpen={() => toggleMenu('category', true)}
-                onDismiss={(val) => { toggleMenu('category', false); if(val) updateForm('category', val); }}
+                onDismiss={(val) => { toggleMenu('category', false); if (val) updateForm('category', val); }}
                 value={form.category}
                 options={CATEGORIES}
               />
             </View>
+
+            <View style={styles.group}>
+              <FormLabel label="Instructions (optional)" />
+              <ModernInput
+                {...inputThemeProps}
+                placeholder="e.g. Take with food"
+                value={form.instructions}
+                onChangeText={(val) => updateForm('instructions', val)}
+              />
+            </View>
           </Surface>
 
-          {/* Adherence & Smart Adjustments Card */}
+          {/* ── SCHEDULE ── */}
+          <Surface style={[styles.card, { backgroundColor: theme.colors.surface }]} elevation={1}>
+            <View style={styles.cardHeader}>
+              <IconButton icon="calendar-clock" size={20} iconColor={theme.colors.primary} />
+              <Text variant="titleMedium" style={styles.cardTitle}>Schedule</Text>
+            </View>
+
+            <View style={styles.group}>
+              <FormLabel label="Treatment Duration" />
+              <SegmentedButtons
+                value={form.isPermanent ? 'perm' : 'course'}
+                onValueChange={(val) => updateForm('isPermanent', val === 'perm')}
+                theme={{
+                  colors: {
+                    secondaryContainer: theme.colors.primaryContainer,
+                    onSecondaryContainer: theme.colors.primary,
+                  },
+                }}
+                buttons={[
+                  { value: 'perm', label: 'Maintenance', icon: 'infinity' },
+                  { value: 'course', label: 'Set Days', icon: 'calendar-check' },
+                ]}
+              />
+              {!form.isPermanent && (
+                <View style={styles.dynamicField}>
+                  <FormLabel label="How many days?" />
+                  <ModernInput
+                    {...inputThemeProps}
+                    placeholder="7"
+                    keyboardType="numeric"
+                    value={form.duration}
+                    onChangeText={(val) => updateForm('duration', val)}
+                  />
+                </View>
+              )}
+            </View>
+
+            <View style={styles.group}>
+              <FormLabel label="Frequency" />
+              <SegmentedButtons
+                value={form.frequency}
+                onValueChange={(val) => {
+                  updateForm('frequency', val);
+                  updateForm('intervalValue', val === 'hourly' ? '8' : '1');
+                  // Restore default slot when switching away from hourly
+                  if (val !== 'hourly' && form.frequency === 'hourly') {
+                    updateForm('times', [DEFAULT_TIME]);
+                  }
+                }}
+                theme={{
+                  colors: {
+                    secondaryContainer: theme.colors.primaryContainer,
+                    onSecondaryContainer: theme.colors.primary,
+                  },
+                }}
+                buttons={[
+                  { value: 'daily', label: 'Daily' },
+                  { value: 'hourly', label: 'Hourly' },
+                  { value: 'interval', label: 'Days' },
+                ]}
+              />
+
+              {form.frequency !== 'daily' && (
+                <View style={styles.dynamicField}>
+                  <FormLabel
+                    label={
+                      form.frequency === 'hourly'
+                        ? 'Every how many hours?'
+                        : 'Every how many days?'
+                    }
+                  />
+                  <SelectionMenu
+                    visible={menuVisible.interval}
+                    onOpen={() => toggleMenu('interval', true)}
+                    onDismiss={(val) => {
+                      toggleMenu('interval', false);
+                      if (val) updateForm('intervalValue', val);
+                    }}
+                    value={form.intervalValue}
+                    options={
+                      form.frequency === 'hourly'
+                        ? HOURLY_OPTIONS
+                        : getFilteredDayOptions(form.duration)
+                    }
+                  />
+                </View>
+              )}
+            </View>
+          </Surface>
+
+          {/* ── REMINDER TIMES (daily / interval mode) ── */}
+          {form.frequency !== 'hourly' && (
+            <Surface style={[styles.card, { backgroundColor: theme.colors.surface }]} elevation={1}>
+              <View style={styles.cardHeader}>
+                <IconButton icon="bell-ring-outline" size={20} iconColor={theme.colors.primary} />
+                <Text variant="titleMedium" style={styles.cardTitle}>Reminder Times</Text>
+              </View>
+
+              {/* Time slot chips — tap to edit, × to remove */}
+              {form.times.length > 0 && (
+                <View style={styles.chipRow}>
+                  {form.times
+                    .slice()
+                    .sort((a, b) => a.hour * 60 + a.minute - (b.hour * 60 + b.minute))
+                    .map((slot, index) => (
+                      <Chip
+                        key={index}
+                        onPress={() => openEditTimePicker(index)}
+                        onClose={() => removeTimeSlot(index)}
+                        closeIcon="close-circle"
+                        style={[styles.timeChip, { backgroundColor: theme.colors.primaryContainer }]}
+                        textStyle={{ color: theme.colors.primary, fontFamily: 'Geist-Medium' }}
+                        icon="clock-outline"
+                      >
+                        {formatTime(slotToDate(slot))}
+                      </Chip>
+                    ))}
+                </View>
+              )}
+
+              <TouchableRipple
+                onPress={openAddTimePicker}
+                style={[styles.addTimeButton, { borderColor: theme.colors.primary }]}
+                borderless
+              >
+                <View style={styles.addTimeInner}>
+                  <MaterialCommunityIcons name="plus-circle-outline" size={20} color={theme.colors.primary} />
+                  <Text style={[styles.addTimeLabel, { color: theme.colors.primary }]}>
+                    {form.times.length === 0 ? 'Add Reminder Time' : 'Add Another Time'}
+                  </Text>
+                </View>
+              </TouchableRipple>
+
+              <View style={[styles.dateTimeContainer, { borderTopColor: theme.colors.outlineVariant }]}>
+                <TouchableRipple onPress={() => togglePicker('date', true)} style={styles.flex1} borderless>
+                  <View style={styles.dateTimeBox}>
+                    <Text variant="labelSmall" style={{ color: theme.colors.secondary }}>START DATE</Text>
+                    <Text variant="bodyLarge" style={styles.boldText}>{formatDate(form.startDate)}</Text>
+                  </View>
+                </TouchableRipple>
+              </View>
+            </Surface>
+          )}
+
+          {/* ── REMINDER TIMES (hourly mode) ── */}
+          {form.frequency === 'hourly' && (
+            <Surface style={[styles.card, { backgroundColor: theme.colors.surface }]} elevation={1}>
+              <View style={styles.cardHeader}>
+                <IconButton icon="bell-ring-outline" size={20} iconColor={theme.colors.primary} />
+                <Text variant="titleMedium" style={styles.cardTitle}>Reminder Times</Text>
+              </View>
+
+              {/* Single editable start time */}
+              <View style={styles.group}>
+                <FormLabel label="First dose time" />
+                <TouchableRipple
+                  onPress={openHourlyStartPicker}
+                  style={[styles.startTimeButton, { borderColor: theme.colors.primary, backgroundColor: theme.colors.primaryContainer }]}
+                  borderless
+                >
+                  <View style={styles.startTimeInner}>
+                    <MaterialCommunityIcons name="clock-edit-outline" size={22} color={theme.colors.primary} />
+                    <Text style={[styles.startTimeLabel, { color: theme.colors.primary }]}>
+                      {formatTime(slotToDate(hourlyStartTime))}
+                    </Text>
+                    <Text style={[styles.startTimeHint, { color: theme.colors.primary }]}>
+                      tap to change
+                    </Text>
+                  </View>
+                </TouchableRipple>
+              </View>
+
+              {/* Auto-generated slots — read-only preview */}
+              {generatedHourlySlots.length > 0 && (
+                <View style={styles.group}>
+                  <FormLabel label={`Auto-generated (every ${form.intervalValue}h)`} />
+                  <View style={styles.chipRow}>
+                    {generatedHourlySlots.map((slot, index) => (
+                      <Chip
+                        key={index}
+                        style={[
+                          styles.timeChip,
+                          {
+                            backgroundColor:
+                              index === 0
+                                ? theme.colors.primaryContainer  // start time highlighted
+                                : theme.colors.surfaceVariant,   // generated slots dimmed
+                          },
+                        ]}
+                        textStyle={{
+                          color: index === 0 ? theme.colors.primary : theme.colors.onSurfaceVariant,
+                          fontFamily: 'Geist-Medium',
+                        }}
+                        icon={index === 0 ? 'clock-start' : 'clock-outline'}
+                      >
+                        {formatTime(slotToDate(slot))}{index === 0 ? ' (start)' : ''}
+                      </Chip>
+                    ))}
+                  </View>
+                  <Text variant="bodySmall" style={styles.helperText}>
+                    These times are set automatically based on your interval. Only the first dose time is editable.
+                  </Text>
+                </View>
+              )}
+
+              {/* Start date */}
+              <View style={[styles.dateTimeContainer, { borderTopColor: theme.colors.outlineVariant }]}>
+                <TouchableRipple onPress={() => togglePicker('date', true)} style={styles.flex1} borderless>
+                  <View style={styles.dateTimeBox}>
+                    <Text variant="labelSmall" style={{ color: theme.colors.secondary }}>START DATE</Text>
+                    <Text variant="bodyLarge" style={styles.boldText}>{formatDate(form.startDate)}</Text>
+                  </View>
+                </TouchableRipple>
+              </View>
+            </Surface>
+          )}
+
+          {/* ── SMART ADHERENCE ── */}
           <Surface style={[styles.card, { backgroundColor: theme.colors.surface }]} elevation={1}>
             <View style={styles.inventoryHeader}>
               <View style={styles.cardHeader}>
                 <IconButton icon="brain" size={20} iconColor={theme.colors.primary} />
                 <Text variant="titleMedium" style={styles.cardTitle}>Smart Adherence</Text>
               </View>
-              <Switch 
-                value={form.isAdjustable} 
+              <Switch
+                value={form.isAdjustable}
                 onValueChange={(val) => updateForm('isAdjustable', val)}
                 color={theme.colors.primary}
               />
@@ -237,41 +705,40 @@ export default function AddMedication({ onBack, medicationId = null }) {
             </Text>
           </Surface>
 
-          {/* Inventory Tracking Card */}
+          {/* ── INVENTORY ── */}
           <Surface style={[styles.card, { backgroundColor: theme.colors.surface }]} elevation={1}>
             <View style={styles.inventoryHeader}>
               <View style={styles.cardHeader}>
                 <IconButton icon="package-variant-closed" size={20} iconColor={theme.colors.primary} />
                 <Text variant="titleMedium" style={styles.cardTitle}>Inventory Tracking</Text>
               </View>
-              <Switch 
-                value={form.isInventoryEnabled} 
+              <Switch
+                value={form.isInventoryEnabled}
                 onValueChange={(val) => updateForm('isInventoryEnabled', val)}
                 color={theme.colors.primary}
               />
             </View>
-
             {form.isInventoryEnabled && (
               <View style={styles.dynamicField}>
                 <View style={styles.row}>
                   <View style={{ flex: 1 }}>
                     <FormLabel label="Total Stock" />
-                    <ModernInput 
+                    <ModernInput
                       {...inputThemeProps}
-                      placeholder="e.g. 12" 
-                      keyboardType="numeric" 
-                      value={form.stock} 
-                      onChangeText={(val) => updateForm('stock', val)} 
+                      placeholder="e.g. 30"
+                      keyboardType="numeric"
+                      value={form.stock}
+                      onChangeText={(val) => updateForm('stock', val)}
                     />
                   </View>
                   <View style={{ flex: 1 }}>
                     <FormLabel label="Low Stock Alert" />
-                    <ModernInput 
+                    <ModernInput
                       {...inputThemeProps}
-                      placeholder="e.g. 2" 
-                      keyboardType="numeric" 
-                      value={form.reorderLevel} 
-                      onChangeText={(val) => updateForm('reorderLevel', val)} 
+                      placeholder="e.g. 5"
+                      keyboardType="numeric"
+                      value={form.reorderLevel}
+                      onChangeText={(val) => updateForm('reorderLevel', val)}
                     />
                   </View>
                 </View>
@@ -279,147 +746,80 @@ export default function AddMedication({ onBack, medicationId = null }) {
             )}
           </Surface>
 
-          {/* Schedule Card */}
-          <Surface style={[styles.card, { backgroundColor: theme.colors.surface }]} elevation={1}>
-            <View style={styles.cardHeader}>
-               <IconButton icon="calendar-clock" size={20} iconColor={theme.colors.primary} />
-               <Text variant="titleMedium" style={styles.cardTitle}>Schedule</Text>
-            </View>
-
-            <View style={styles.group}>
-              <FormLabel label="Treatment Duration" />
-              <SegmentedButtons
-                value={form.isPermanent ? 'perm' : 'course'}
-                onValueChange={(val) => updateForm('isPermanent', val === 'perm')}
-                theme={{ colors: { secondaryContainer: theme.colors.primaryContainer, onSecondaryContainer: theme.colors.primary }}}
-                buttons={[
-                  { value: 'perm', label: 'Maintenance', icon: 'infinity' },
-                  { value: 'course', label: 'Set Days', icon: 'calendar-check' },
-                ]}
-              />
-              {!form.isPermanent && (
-                <View style={styles.dynamicField}>
-                  <FormLabel label="How many days?" />
-                  <ModernInput 
-                    {...inputThemeProps}
-                    placeholder="7" 
-                    keyboardType="numeric" 
-                    value={form.duration} 
-                    onChangeText={(val) => updateForm('duration', val)} 
-                  />
-                </View>
-              )}
-            </View>
-
-            <View style={styles.group}>
-              <FormLabel label="Frequency" />
-              <SegmentedButtons
-                value={['daily', 'hourly', 'interval'].includes(form.frequency) ? form.frequency : 'daily'}
-                onValueChange={(val) => {
-                  updateForm('frequency', val);
-                  updateForm('intervalValue', '1');
-                }}
-                theme={{ colors: { secondaryContainer: theme.colors.primaryContainer, onSecondaryContainer: theme.colors.primary }}}
-                buttons={[
-                  { value: 'daily', label: 'Daily' },
-                  { value: 'hourly', label: 'Hourly' },
-                  { value: 'interval', label: 'Days' },
-                ]}
-              />
-              {form.frequency !== 'daily' && (
-                <View style={styles.dynamicField}>
-                  <FormLabel label={form.frequency === 'hourly' ? "Every how many hours?" : "Every how many days?"} />
-                  <SelectionMenu 
-                    visible={menuVisible.interval}
-                    onOpen={() => toggleMenu('interval', true)}
-                    onDismiss={(val) => { 
-                      toggleMenu('interval', false); 
-                      if(val) updateForm('intervalValue', val); 
-                    }}
-                    value={form.intervalValue}
-                    options={form.frequency === 'hourly' ? HOURLY_OPTIONS : getFilteredDayOptions(form.duration)}
-                  />
-                </View>
-              )}
-            </View>
-          </Surface>
-
-          {/* Reminders Card */}
-          <Surface style={[styles.card, { backgroundColor: theme.colors.surface }]} elevation={1}>
-            <View style={styles.cardHeader}>
-               <IconButton icon="bell-ring-outline" size={20} iconColor={theme.colors.primary} />
-               <Text variant="titleMedium" style={styles.cardTitle}>Reminders</Text>
-            </View>
-            <View style={[styles.dateTimeContainer, { borderTopColor: theme.colors.outlineVariant }]}>
-               <TouchableRipple onPress={() => togglePicker('date', true)} style={styles.flex1} borderless>
-                  <View style={styles.dateTimeBox}>
-                     <Text variant="labelSmall" style={{ color: theme.colors.secondary }}>START DATE</Text>
-                     <Text variant="bodyLarge" style={styles.boldText}>{formatDate(form.startDate)}</Text>
-                  </View>
-               </TouchableRipple>
-               <View style={[styles.verticalDivider, { backgroundColor: theme.colors.outlineVariant }]} />
-               <TouchableRipple onPress={() => togglePicker('time', true)} style={styles.flex1} borderless>
-                  <View style={styles.dateTimeBox}>
-                     <Text variant="labelSmall" style={{ color: theme.colors.secondary }}>REMINDER TIME</Text>
-                     <Text variant="bodyLarge" style={styles.boldText}>{formatTime(form.time)}</Text>
-                  </View>
-               </TouchableRipple>
-            </View>
-          </Surface>
-
-          <View style={[styles.summaryBox, { backgroundColor: theme.colors.primaryContainer, borderColor: theme.colors.primary }]}>
-              <Text variant="bodyMedium" style={{ color: theme.colors.onPrimaryContainer, lineHeight: 20 }}>
-                {getScheduleSummary(form)}
-              </Text>
+          {/* ── SCHEDULE SUMMARY ── */}
+          <View
+            style={[
+              styles.summaryBox,
+              { backgroundColor: theme.colors.primaryContainer, borderColor: theme.colors.primary },
+            ]}
+          >
+            <Text
+              variant="bodyMedium"
+              style={{ color: theme.colors.onPrimaryContainer, lineHeight: 20 }}
+            >
+              {getScheduleSummary({
+                ...form,
+                schedules: form.frequency === 'hourly' ? generatedHourlySlots : form.times,
+              })}
+            </Text>
           </View>
 
-          <Button 
-            mode="contained" 
-            onPress={handleSave} 
+          {/* ── SAVE BUTTON ── */}
+          <Button
+            mode="contained"
+            onPress={handleSave}
+            loading={isSaving}
+            disabled={isSaving}
             style={styles.saveButton}
             contentStyle={{ height: 56 }}
-            labelStyle={{ fontSize: 16, fontWeight: 'bold' }}
+            labelStyle={{ fontSize: 16, fontFamily: 'Geist-Bold' }}
           >
-            {medicationId ? "Update Medication" : "Confirm & Save"}
+            {isEditMode ? 'Update Medication' : 'Confirm & Save'}
           </Button>
 
-          <StatusModal 
+          {/* ── MODALS ── */}
+          <StatusModal
             visible={modalType !== null}
             onDismiss={() => setModalType(null)}
-            title={modalType === 'pastTime' ? "Invalid Time" : "Missing Info"}
+            title={
+              modalType === 'pastTime' ? 'Invalid Time'
+              : modalType === 'noTimes' ? 'No Reminder Times'
+              : 'Missing Info'
+            }
             message={
-              modalType === 'pastTime' 
-                ? "Reminders cannot be set in the past." 
-                : "Please enter a medicine name and a valid dosage."
+              modalType === 'pastTime'
+                ? 'Reminders cannot be set in the past.'
+                : modalType === 'noTimes'
+                ? 'Please add at least one reminder time.'
+                : 'Please enter a medicine name and a valid dosage.'
             }
             type="warning"
           />
 
-          <TimeSelector 
-            show={pickerVisible.time} 
-            value={form.time} 
-            startDate={form.startDate} 
+          {/* ── TIME PICKER ── */}
+          <TimeSelector
+            show={pickerVisible.time}
+            value={timePickerValue}
+            startDate={form.startDate}
             onInvalidTime={() => {
-                setTimeout(() => setModalType('pastTime'), 400);
+              setTimeout(() => setModalType('pastTime'), 400);
             }}
             onChange={(e, date) => {
-                if(date) { 
-                  const newDate = new Date(form.startDate);
-                  newDate.setHours(date.getHours(), date.getMinutes(), 0, 0);
-                  updateForm('time', newDate); 
-                }
-                togglePicker('time', false);
+              if (date) handleTimeConfirm(date);
+              togglePicker('time', false);
             }}
-            onCancel={() => togglePicker('time', false)}
+            onCancel={() => {
+              setEditingSlotIndex(-1);
+              togglePicker('time', false);
+            }}
           />
 
-          <DateSelector 
+          {/* ── DATE PICKER ── */}
+          <DateSelector
             show={pickerVisible.date}
             value={form.startDate}
             onChange={(date) => {
-              const updated = new Date(date);
-              updated.setHours(form.time.getHours(), form.time.getMinutes());
-              updateForm('startDate', updated);
+              updateForm('startDate', new Date(date));
               togglePicker('date', false);
             }}
             onCancel={() => togglePicker('date', false)}
@@ -429,6 +829,10 @@ export default function AddMedication({ onBack, medicationId = null }) {
     </View>
   );
 }
+
+// ─────────────────────────────────────────────
+// STYLES
+// ─────────────────────────────────────────────
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
@@ -440,12 +844,31 @@ const styles = StyleSheet.create({
   group: { gap: 8 },
   row: { flexDirection: 'row', gap: 12 },
   dynamicField: { marginTop: 4, gap: 8 },
-  helperText: { opacity: 0.7, fontStyle: 'italic', paddingLeft: 4, fontSize: 12, marginTop: -8 },
+  helperText: { opacity: 0.7, fontStyle: 'italic', paddingLeft: 4, fontSize: 12, marginTop: -4 },
   dateTimeContainer: { flexDirection: 'row', borderTopWidth: 1, paddingTop: 16, marginTop: 8 },
   flex1: { flex: 1 },
   dateTimeBox: { alignItems: 'center', gap: 4, paddingVertical: 8 },
-  verticalDivider: { width: 1 },
   boldText: { fontWeight: 'bold' },
   summaryBox: { padding: 16, borderRadius: 20, borderStyle: 'dashed', borderWidth: 1 },
   saveButton: { marginTop: 8, marginBottom: 50, borderRadius: 16 },
+  chipRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  timeChip: { borderRadius: 20 },
+  addTimeButton: {
+    borderWidth: 1.5,
+    borderStyle: 'dashed',
+    borderRadius: 14,
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+  },
+  addTimeInner: { flexDirection: 'row', alignItems: 'center', gap: 8, justifyContent: 'center' },
+  addTimeLabel: { fontFamily: 'Geist-Medium', fontSize: 14 },
+  startTimeButton: {
+    borderWidth: 1.5,
+    borderRadius: 14,
+    paddingVertical: 14,
+    paddingHorizontal: 20,
+  },
+  startTimeInner: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  startTimeLabel: { fontFamily: 'Geist-Bold', fontSize: 22, flex: 1 },
+  startTimeHint: { fontFamily: 'Geist-Regular', fontSize: 12, opacity: 0.7 },
 });
