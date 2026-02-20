@@ -1,8 +1,17 @@
+// src/components/StatusModal.js
 import React from 'react';
 import { View, StyleSheet } from 'react-native';
 import { Modal, Portal, Text, Button, useTheme, Avatar } from 'react-native-paper';
 
-export const StatusModal = ({ visible, onDismiss, title, message, type = 'warning' }) => {
+export const StatusModal = ({ 
+  visible, 
+  onDismiss, 
+  onConfirm, // Added this
+  title, 
+  message, 
+  type = 'warning',
+  confirmLabel = "Confirm" // Added this
+}) => {
   const theme = useTheme();
 
   const config = {
@@ -33,14 +42,28 @@ export const StatusModal = ({ visible, onDismiss, title, message, type = 'warnin
           <Text variant="bodyMedium" style={[styles.message, { color: theme.colors.onSurfaceVariant }]}>
             {message}
           </Text>
-          <Button 
-            mode="contained" 
-            onPress={onDismiss} 
-            style={styles.modalButton}
-            contentStyle={{ height: 48 }}
-          >
-            Got it
-          </Button>
+          
+          <View style={styles.buttonContainer}>
+            {onConfirm && (
+              <Button 
+                mode="text" 
+                onPress={onDismiss} 
+                style={[styles.modalButton, { flex: 1 }]}
+                textColor={theme.colors.onSurfaceVariant}
+              >
+                Cancel
+              </Button>
+            )}
+            <Button 
+              mode="contained" 
+              onPress={onConfirm || onDismiss} 
+              style={[styles.modalButton, { flex: onConfirm ? 1 : 0 }]}
+              contentStyle={{ height: 48 }}
+              buttonColor={type === 'warning' && onConfirm ? theme.colors.error : theme.colors.primary}
+            >
+              {onConfirm ? confirmLabel : "Got it"}
+            </Button>
+          </View>
         </View>
       </Modal>
     </Portal>
@@ -52,5 +75,6 @@ const styles = StyleSheet.create({
   modalInner: { alignItems: 'center', width: '100%' },
   title: { fontFamily: 'Geist-Bold', marginTop: 16, textAlign: 'center' },
   message: { textAlign: 'center', marginTop: 8, marginBottom: 24, lineHeight: 20 },
-  modalButton: { width: '100%', borderRadius: 12 },
+  buttonContainer: { flexDirection: 'row', gap: 10, width: '100%' },
+  modalButton: { borderRadius: 12 },
 });

@@ -16,18 +16,18 @@ import { RealmProvider, useQuery, useRealm } from '@realm/react';
 import Realm from 'realm';
 
 // Local Imports
-import { RealmSchemas, MedicationStatus, Profile } from './src/models/Schemas';
+import { RealmSchemas, MedicationStatus, Profile, Medication } from './src/models/Schemas';
 import { lightTheme, darkTheme } from './src/theme';
 import NotificationService from './src/services/NotificationService';
 import AlarmOverlay from './src/components/AlarmOverlay';
+
+export const ThemeContext = createContext({ toggleTheme: () => {}, isDarkMode: false });
 
 // Screens
 import HomeScreen from './src/screens/HomeScreen';
 import HistoryScreen from './src/screens/HistoryScreen';
 import WelcomeScreen from './src/screens/WelcomeScreen';
 import AddProfileScreen from './src/screens/AddProfileScreen';
-
-export const ThemeContext = createContext({ toggleTheme: () => {}, isDarkMode: false });
 
 // ─────────────────────────────────────────────
 // SHARED LOGIC FOR SAVING LOGS
@@ -40,61 +40,41 @@ const performMedicationAction = async (realm, notification, actionId) => {
   try {
     const medId = new Realm.BSON.UUID(medicationId);
     const now = new Date();
+    const medication = realm.objectForPrimaryKey('Medication', medId);
 
-    if (actionId === MedicationStatus.TAKEN) {
-      const medication = realm.objectForPrimaryKey('Medication', medId);
-
-      realm.write(() => {
-        realm.create('MedicationLog', {
-          _id: new Realm.BSON.UUID(),
-          medicationId: medId,
-          profileId: profileId ? new Realm.BSON.UUID(profileId) : null,
-          medicationName: medication?.name ?? medicationName ?? 'Medication',
-          dosageSnapshot: medication
-            ? `${medication.dosage} ${medication.unit}`
-            : (dosageSnapshot ?? ''),
-          status: MedicationStatus.TAKEN,
-          scheduledAt: new Date(scheduledAt),
-          takenAt: now,
-          delayMinutes: Math.max(0, Math.round((now - new Date(scheduledAt)) / 60000)),
-          note: null,
-        });
-
-        if (medication?.isInventoryEnabled && medication.stock > 0) {
-          medication.stock -= 1;
-          medication.updatedAt = now;
-        }
-
-        if (medication) {
-          medication.nextOccurrence = NotificationService.computeNextOccurrence(medication);
-          medication.updatedAt = now;
-        }
+    realm.write(() => {
+      // 1. Create the Log entry
+      realm.create('MedicationLog', {
+        _id: new Realm.BSON.UUID(),
+        medicationId: medId,
+        profileId: profileId ? new Realm.BSON.UUID(profileId) : null,
+        medicationName: medication?.name ?? medicationName ?? 'Medication',
+        dosageSnapshot: medication 
+          ? `${medication.dosage} ${medication.unit}` 
+          : (dosageSnapshot ?? ''),
+        status: actionId, // TAKEN, SKIPPED, or MISSED
+        scheduledAt: new Date(scheduledAt),
+        takenAt: actionId === MedicationStatus.TAKEN ? now : null,
+        delayMinutes: actionId === MedicationStatus.TAKEN 
+          ? Math.max(0, Math.round((now - new Date(scheduledAt)) / 60000)) 
+          : 0,
+        note: actionId === MedicationStatus.SKIPPED ? 'Skipped by user' : null,
       });
-    }
+
+      // 2. Inventory Management (Only if taken)
+      if (actionId === MedicationStatus.TAKEN && medication?.isInventoryEnabled && medication.stock > 0) {
+        medication.stock -= 1;
+      }
+
+      // 3. Update schedule (Move to next occurrence)
+      if (medication && actionId !== MedicationStatus.SNOOZED) {
+        medication.nextOccurrence = NotificationService.computeNextOccurrence(medication);
+        medication.updatedAt = now;
+      }
+    });
 
     if (actionId === MedicationStatus.SNOOZED) {
       await NotificationService.snoozeMedication(realm, notification);
-    }
-
-    if (actionId === MedicationStatus.SKIPPED) {
-      const medication = realm.objectForPrimaryKey('Medication', medId);
-
-      realm.write(() => {
-        realm.create('MedicationLog', {
-          _id: new Realm.BSON.UUID(),
-          medicationId: medId,
-          profileId: profileId ? new Realm.BSON.UUID(profileId) : null,
-          medicationName: medication?.name ?? medicationName ?? 'Medication',
-          dosageSnapshot: medication
-            ? `${medication.dosage} ${medication.unit}`
-            : (dosageSnapshot ?? ''),
-          status: MedicationStatus.SKIPPED,
-          scheduledAt: new Date(scheduledAt),
-          takenAt: null,
-          delayMinutes: 0,
-          note: null,
-        });
-      });
     }
 
     await notifee.cancelNotification(notification.id);
@@ -105,18 +85,12 @@ const performMedicationAction = async (realm, notification, actionId) => {
 
 // ─────────────────────────────────────────────
 // BACKGROUND EVENT HANDLER
-// Must be registered before AppRegistry
 // ─────────────────────────────────────────────
 
 notifee.onBackgroundEvent(async ({ type, detail }) => {
   const { notification, pressAction } = detail;
-
   if (type === EventType.ACTION_PRESS && pressAction?.id) {
-    const realm = await Realm.open({
-      schema: RealmSchemas,
-      schemaVersion: 2,
-    });
-
+    const realm = await Realm.open({ schema: RealmSchemas, schemaVersion: 2 });
     try {
       await performMedicationAction(realm, notification, pressAction.id);
     } catch (e) {
@@ -131,24 +105,52 @@ notifee.onBackgroundEvent(async ({ type, detail }) => {
 // HELPERS
 // ─────────────────────────────────────────────
 
-/**
- * Checks Notifee's displayed notifications list for any active alarm
- * and returns the first one found, or null.
- *
- * This is the key fix: when the screen wakes via fullScreenAction,
- * the app goes background → active. EventType.DELIVERED never fires
- * in this case because the notification was already delivered while
- * the app was backgrounded. We must actively query displayed
- * notifications to find it.
- */
 const findDisplayedAlarm = async () => {
   try {
     const displayed = await notifee.getDisplayedNotifications();
     const alarm = displayed.find((n) => n.notification?.data?.isAlarm === 'true');
     return alarm?.notification ?? null;
   } catch (e) {
-    console.error('[findDisplayedAlarm] Error:', e);
     return null;
+  }
+};
+
+/**
+ * The "Janitor": Automatically marks doses as MISSED if they are > 2 hours overdue.
+ */
+const checkAndHandleMissedDoses = (realm) => {
+  const MISSED_THRESHOLD_MS = 2 * 60 * 60 * 1000; // 2 Hours
+  const now = new Date();
+
+  // Find active medications where the nextOccurrence is in the past beyond the threshold
+  const overdueMeds = realm.objects('Medication').filtered(
+    'isActive == true && nextOccurrence != null && nextOccurrence < $0',
+    new Date(now.getTime() - MISSED_THRESHOLD_MS)
+  );
+
+  if (overdueMeds.length > 0) {
+    realm.write(() => {
+      overdueMeds.forEach((med) => {
+        console.log(`[Janitor] Marking ${med.name} as MISSED`);
+        
+        realm.create('MedicationLog', {
+          _id: new Realm.BSON.UUID(),
+          medicationId: med._id,
+          profileId: med.owner?.[0]?._id ?? null,
+          medicationName: med.name,
+          dosageSnapshot: `${med.dosage} ${med.unit}`,
+          status: MedicationStatus.MISSED,
+          scheduledAt: med.nextOccurrence,
+          takenAt: null,
+          delayMinutes: 0,
+          note: 'Automatically marked as missed (2hr timeout)',
+        });
+
+        // Advance to the next scheduled time
+        med.nextOccurrence = NotificationService.computeNextOccurrence(med);
+        med.updatedAt = now;
+      });
+    });
   }
 };
 
@@ -161,24 +163,17 @@ const Tab = createBottomTabNavigator();
 function MainTabs() {
   const theme = useTheme();
   const insets = useSafeAreaInsets();
-
   return (
     <Tab.Navigator
       screenOptions={{
         headerShown: false,
         tabBarActiveTintColor: theme.colors.primary,
-        tabBarInactiveTintColor: theme.dark ? '#888888' : '#666666',
         tabBarStyle: {
           height: 65 + insets.bottom,
           paddingBottom: insets.bottom > 0 ? insets.bottom : 8,
           paddingTop: 8,
           backgroundColor: theme.colors.surface,
           borderTopWidth: 0,
-        },
-        tabBarLabelStyle: {
-          fontFamily: 'Geist-Medium',
-          fontSize: 12,
-          marginBottom: 4,
         },
       }}
     >
@@ -187,9 +182,7 @@ function MainTabs() {
         component={HomeScreen}
         options={{
           tabBarLabel: 'Today',
-          tabBarIcon: ({ color }) => (
-            <MaterialCommunityIcons name="pill" color={color} size={26} />
-          ),
+          tabBarIcon: ({ color }) => <MaterialCommunityIcons name="pill" color={color} size={26} />,
         }}
       />
       <Tab.Screen
@@ -197,9 +190,7 @@ function MainTabs() {
         component={HistoryScreen}
         options={{
           tabBarLabel: 'History',
-          tabBarIcon: ({ color }) => (
-            <MaterialCommunityIcons name="clipboard-text" color={color} size={26} />
-          ),
+          tabBarIcon: ({ color }) => <MaterialCommunityIcons name="clipboard-text" color={color} size={26} />,
         }}
       />
     </Tab.Navigator>
@@ -222,71 +213,51 @@ function AppContent() {
   const activeTheme = useMemo(() => (isDarkMode ? darkTheme : lightTheme), [isDarkMode]);
 
   useEffect(() => {
-    // ── 1. COLD START: app was fully killed ─────
-    // Covers: user taps notification while app was dead
+    // Check for missed doses immediately on mount
+    checkAndHandleMissedDoses(realm);
+
     notifee.getInitialNotification().then((initial) => {
-      if (initial?.notification?.data?.isAlarm === 'true') {
-        setActiveAlarm(initial.notification);
-      }
+      if (initial?.notification?.data?.isAlarm === 'true') setActiveAlarm(initial.notification);
     });
 
-    // ── 2. WARM START: app was backgrounded ─────
-    // Covers: screen wakes via fullScreenAction while app was alive in background.
-    // EventType.DELIVERED does NOT fire here — we must query displayed notifications.
     findDisplayedAlarm().then((alarm) => {
       if (alarm) setActiveAlarm(alarm);
     });
 
-    // ── 3. FOREGROUND EVENT HANDLER ─────────────
     const unsubscribeForeground = notifee.onForegroundEvent(async ({ type, detail }) => {
       const { notification } = detail;
-
-      // Covers: alarm fires while the app is already open in the foreground
       if (type === EventType.DELIVERED && notification?.data?.isAlarm === 'true') {
         setActiveAlarm(notification);
       }
-
-      // Covers: user presses action button (Taken/Snooze/Skip) from the shade
       if (type === EventType.ACTION_PRESS) {
         await performMedicationAction(realm, notification, detail.pressAction.id);
         setActiveAlarm(null);
       }
-
-      // Covers: user swipes away the notification from the shade
       if (type === EventType.DISMISSED) {
         setActiveAlarm((prev) => (prev?.id === notification?.id ? null : prev));
       }
     });
 
-    // ── 4. APPSTATE: background → foreground ────
-    // Two jobs:
-    //   a) Check for any alarm that fired while the screen was off/locked
-    //      and show the overlay if one is still displayed
-    //   b) Re-schedule all alarms from Realm as a safety net after reboots
     const unsubscribeAppState = AppState.addEventListener('change', async (nextState) => {
-      const wasBackground =
-        appState.current === 'background' || appState.current === 'inactive';
+      const wasBackground = appState.current === 'background' || appState.current === 'inactive';
       const isNowActive = nextState === 'active';
 
       if (wasBackground && isNowActive) {
-        // (a) Check for a displayed alarm — this is the fix for the overlay not showing
-        const displayedAlarm = await findDisplayedAlarm();
-        if (displayedAlarm) {
-          setActiveAlarm(displayedAlarm);
-        }
+        // Run Janitor every time app returns to foreground
+        checkAndHandleMissedDoses(realm);
 
-        // (b) Re-schedule alarms wiped by Android after reboot/force-kill
+        const displayedAlarm = await findDisplayedAlarm();
+        if (displayedAlarm) setActiveAlarm(displayedAlarm);
+
         try {
           await NotificationService.rescheduleAllAlarms(realm);
         } catch (e) {
-          console.error('[AppState] rescheduleAllAlarms error:', e);
+          console.error(e);
         }
       }
-
       appState.current = nextState;
     });
 
-    // ── 5. INITIALIZATION DELAY ─────────────────
     const timer = setTimeout(() => setIsInitializing(false), 2000);
 
     return () => {
@@ -298,86 +269,41 @@ function AppContent() {
 
   if (isInitializing) {
     return (
-      <View
-        style={{
-          flex: 1,
-          justifyContent: 'center',
-          alignItems: 'center',
-          backgroundColor: activeTheme.colors.background,
-        }}
-      >
+      <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: activeTheme.colors.background }}>
         <ActivityIndicator size="large" color={activeTheme.colors.primary} />
-        <Text
-          style={{
-            marginTop: 16,
-            color: activeTheme.colors.onSurfaceVariant,
-            fontFamily: 'Geist-Medium',
-          }}
-        >
-          Initializing health services...
-        </Text>
       </View>
     );
   }
 
   return (
-    <ThemeContext.Provider
-      value={{ toggleTheme: () => setIsDarkMode((prev) => !prev), isDarkMode }}
-    >
+    <ThemeContext.Provider value={{ toggleTheme: () => setIsDarkMode((prev) => !prev), isDarkMode }}>
       <PaperProvider theme={activeTheme}>
         <NavigationContainer theme={activeTheme}>
           <View style={{ flex: 1, backgroundColor: activeTheme.colors.background }}>
-            <StatusBar
-              barStyle={isDarkMode ? 'light-content' : 'dark-content'}
-              backgroundColor="transparent"
-              translucent
-            />
+            <StatusBar barStyle={isDarkMode ? 'light-content' : 'dark-content'} backgroundColor="transparent" translucent />
 
-            {/* Full-screen alarm overlay — renders above everything */}
-            {activeAlarm ? (
+            {activeAlarm && (
               <AlarmOverlay
                 isVisible={true}
                 medication={activeAlarm.data}
-                onTake={async () => {
-                  await performMedicationAction(realm, activeAlarm, MedicationStatus.TAKEN);
-                  setActiveAlarm(null);
-                }}
-                onSnooze={async () => {
-                  await performMedicationAction(realm, activeAlarm, MedicationStatus.SNOOZED);
-                  setActiveAlarm(null);
-                }}
-                onSkip={async () => {
-                  await performMedicationAction(realm, activeAlarm, MedicationStatus.SKIPPED);
-                  setActiveAlarm(null);
-                }}
+                onTake={() => performMedicationAction(realm, activeAlarm, MedicationStatus.TAKEN).then(() => setActiveAlarm(null))}
+                onSnooze={() => performMedicationAction(realm, activeAlarm, MedicationStatus.SNOOZED).then(() => setActiveAlarm(null))}
+                onSkip={() => performMedicationAction(realm, activeAlarm, MedicationStatus.SKIPPED).then(() => setActiveAlarm(null))}
               />
-            ) : null}
+            )}
 
-            {/* Screen routing */}
             {profiles.length > 0 ? (
               <MainTabs />
             ) : !hasStartedOnboarding ? (
-              <WelcomeScreen
-                onStart={() => {
-                  NotificationService.bootstrap();
-                  setHasStartedOnboarding(true);
-                }}
-              />
+              <WelcomeScreen onStart={() => { NotificationService.bootstrap(); setHasStartedOnboarding(true); }} />
             ) : (
               <AddProfileScreen isFirstProfile={true} />
             )}
 
-            {/* Theme toggle FAB */}
             <Portal>
               <FAB
                 icon={isDarkMode ? 'weather-sunny' : 'weather-night'}
-                style={{
-                  position: 'absolute',
-                  top: 50,
-                  right: 16,
-                  backgroundColor: activeTheme.colors.surface,
-                  borderRadius: 12,
-                }}
+                style={{ position: 'absolute', top: 50, right: 16, backgroundColor: activeTheme.colors.surface, borderRadius: 12 }}
                 onPress={() => setIsDarkMode((prev) => !prev)}
                 size="small"
               />
@@ -388,10 +314,6 @@ function AppContent() {
     </ThemeContext.Provider>
   );
 }
-
-// ─────────────────────────────────────────────
-// ROOT
-// ─────────────────────────────────────────────
 
 export default function App() {
   const [fontsLoaded] = useFonts({
@@ -405,11 +327,7 @@ export default function App() {
 
   return (
     <SafeAreaProvider>
-      <RealmProvider
-        schema={RealmSchemas}
-        schemaVersion={2}
-        deleteRealmIfMigrationNeeded={true}
-      >
+      <RealmProvider schema={RealmSchemas} schemaVersion={2} deleteRealmIfMigrationNeeded={true}>
         <AppContent />
       </RealmProvider>
     </SafeAreaProvider>
