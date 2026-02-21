@@ -16,6 +16,7 @@ import { Frequency, MedicationStatus } from '../models/Schemas';
 
 const CHANNEL_ID = 'medication_alarms';
 const SNOOZE_DURATION_MINUTES = 10;
+const SMART_ADHERENCE_THRESHOLD_MINUTES = 30;
 
 // ─────────────────────────────────────────────
 // HELPERS
@@ -263,6 +264,165 @@ class NotificationService {
       console.log(`[NotificationService] Rescheduled alarms for ${medications.length} medications.`);
     } catch (e) {
       console.error('[NotificationService] rescheduleAllAlarms error:', e);
+    }
+  }
+
+  // ── SMART ADHERENCE ────────────────────────
+
+  /**
+   * Computes how many minutes late a dose was taken.
+   *
+   * @param {string} scheduledAt  - ISO string of the originally scheduled time
+   * @param {Date}   takenAt      - The actual time the user marked it taken (default: now)
+   * @returns {number} Delay in minutes (0 if on time or early)
+   */
+  computeDelayMinutes(scheduledAt, takenAt = new Date()) {
+    const scheduled = new Date(scheduledAt);
+    const delayMs = takenAt.getTime() - scheduled.getTime();
+    return Math.max(0, Math.floor(delayMs / 60000));
+  }
+
+  /**
+   * Returns true if the delay is significant enough to suggest an adjustment.
+   *
+   * @param {number} delayMinutes
+   * @returns {boolean}
+   */
+  shouldSuggestAdjustment(delayMinutes) {
+    return delayMinutes >= SMART_ADHERENCE_THRESHOLD_MINUTES;
+  }
+
+  /**
+   * Computes the suggested next alarm time based on how late the dose was taken.
+   *
+   * For EVERY_X_HOURS: next fire = takenAt + intervalHours
+   *   → preserves the correct gap between doses regardless of when it was taken.
+   *
+   * For DAILY / SPECIFIC_DAYS: next fire = original next slot time + delayMinutes
+   *   → nudges the next reminder forward by the same delay so the gap stays consistent.
+   *
+   * @param {Medication} medication
+   * @param {string}     scheduledAt    - ISO string of the originally scheduled time
+   * @param {number}     delayMinutes   - How late the dose was taken
+   * @param {Date}       takenAt        - Actual taken time (default: now)
+   * @returns {Date|null} The suggested adjusted fire time, or null if not applicable
+   */
+  computeAdjustedNextTime(medication, scheduledAt, delayMinutes, takenAt = new Date()) {
+    try {
+      switch (medication.frequency) {
+        case Frequency.EVERY_X_HOURS: {
+          if (!medication.intervalHours) return null;
+          // Simply add the full interval from the moment it was taken
+          return new Date(takenAt.getTime() + medication.intervalHours * 60 * 60 * 1000);
+        }
+
+        case Frequency.DAILY:
+        case Frequency.SPECIFIC_DAYS: {
+          // Find the next scheduled slot after now
+          const nextOccurrence = this.computeNextOccurrence(medication);
+          if (!nextOccurrence) return null;
+          // Shift it forward by the same delay
+          return new Date(nextOccurrence.getTime() + delayMinutes * 60 * 1000);
+        }
+
+        default:
+          return null;
+      }
+    } catch (e) {
+      console.error('[NotificationService] computeAdjustedNextTime error:', e);
+      return null;
+    }
+  }
+
+  /**
+   * Schedules a ONE-OFF adjusted alarm for the next dose only.
+   * Does NOT touch medication.schedules in Realm — the base schedule stays clean.
+   * The day after, rescheduleAllAlarms() on boot restores normal repeating alarms.
+   *
+   * @param {Realm}      realm
+   * @param {Medication} medication
+   * @param {Date}       adjustedTime   - The new one-off fire time
+   * @returns {string|null} The temporary notification ID, or null on failure
+   */
+  async rescheduleNextAlarm(realm, medication, adjustedTime) {
+    try {
+      // Cancel the existing next alarms so we don't double-fire
+      await this.cancelMedicationAlarms(medication);
+
+      const tempId = `${toStringId(medication._id)}_adjusted_${adjustedTime.getTime()}`;
+
+      const data = {
+        medicationId:   toStringId(medication._id),
+        profileId:      medication.owner?.[0]?._id ? toStringId(medication.owner[0]._id) : '',
+        medicationName: medication.name,
+        dosageSnapshot: `${medication.dosage} ${medication.unit}`,
+        scheduledAt:    adjustedTime.toISOString(),
+        scheduleHour:   String(adjustedTime.getHours()),
+        scheduleMinute: String(adjustedTime.getMinutes()),
+        isAlarm:        'true',
+        isAdjusted:     'true', // flag so App.js knows this was a smart-adherence reschedule
+      };
+
+      const trigger = {
+        type:         TriggerType.TIMESTAMP,
+        timestamp:    adjustedTime.getTime(),
+        // No repeatFrequency — this is intentionally one-off
+        alarmManager: { allowWhileIdle: true },
+      };
+
+      await notifee.createTriggerNotification(
+        {
+          id:    tempId,
+          title: '💊 Adjusted Reminder',
+          body:  `Time for your ${medication.dosage} ${medication.unit} of ${medication.name}.`,
+          data,
+          android: {
+            channelId:   CHANNEL_ID,
+            category:    AndroidCategory.ALARM,
+            importance:  AndroidImportance.HIGH,
+            visibility:  AndroidVisibility.PUBLIC,
+            sound:       'med_alarm',
+            ongoing:     true,
+            autoCancel:  false,
+            fullScreenAction: { id: 'default', launchActivity: 'default' },
+            pressAction: {
+              id: 'default',
+              launchActivity: 'default',
+              launchActivityFlags: [AndroidLaunchActivityFlag.SINGLE_TOP],
+            },
+            actions: [
+              { title: '✅ Taken', pressAction: { id: MedicationStatus.TAKEN } },
+              { title: '⏰ Snooze', pressAction: { id: MedicationStatus.SNOOZED } },
+              { title: '✖ Skip',   pressAction: { id: MedicationStatus.SKIPPED } },
+            ],
+          },
+          ios: {
+            sound:          'med_alarm.caf',
+            critical:       true,
+            criticalVolume: 1.0,
+            categoryId:     'MEDICATION_ALARM',
+          },
+        },
+        trigger,
+      );
+
+      // Store the temp notification ID on the first active schedule
+      // so cancelMedicationAlarms() can clean it up later if needed
+      const firstSchedule = medication.schedules.find((s) => s.isActive);
+      if (firstSchedule) {
+        realm.write(() => {
+          firstSchedule.notificationId = tempId;
+        });
+      }
+
+      console.log(
+        `[NotificationService] Smart Adherence: rescheduled ${medication.name} → ${adjustedTime.toLocaleTimeString()}`,
+      );
+
+      return tempId;
+    } catch (e) {
+      console.error('[NotificationService] rescheduleNextAlarm error:', e);
+      return null;
     }
   }
 

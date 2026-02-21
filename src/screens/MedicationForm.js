@@ -31,7 +31,19 @@ import {
   slotToDate, generateHourlySlots, getTodaySlots, computeEndDate,
   toFrequencyConstant, fromFrequencyConstant,
   getFilteredDayOptions, getScheduleSummary, formatDate, formatTime, formatSlotLabel,
+  validateInventoryLevels, isSlotPassedToday,
 } from '../constants/medicationOptions';
+
+// ─────────────────────────────────────────────
+// INLINE ERROR
+// ─────────────────────────────────────────────
+
+const InlineError = ({ message, theme }) => (
+  <View style={styles.inlineErrorRow}>
+    <MaterialCommunityIcons name="alert-circle-outline" size={14} color={theme.colors.error} />
+    <Text style={[styles.inlineErrorText, { color: theme.colors.error }]}>{message}</Text>
+  </View>
+);
 
 // ─────────────────────────────────────────────
 // COMPONENT
@@ -57,15 +69,18 @@ export default function MedicationForm({ onBack, medicationId = null }) {
 
   const isEditMode = !!existingMed;
 
-  const [form, setForm]                       = useState(defaultForm);
-  const [hourlyStartTime, setHourlyStartTime] = useState(DEFAULT_TIME);
-  const [timePickerValue, setTimePickerValue] = useState(slotToDate(DEFAULT_TIME));
+  const [form, setForm]                         = useState(defaultForm);
+  const [hourlyStartTime, setHourlyStartTime]   = useState(DEFAULT_TIME);
+  const [timePickerValue, setTimePickerValue]   = useState(slotToDate(DEFAULT_TIME));
   const [editingSlotIndex, setEditingSlotIndex] = useState(-1);
-  const [timePickerMode, setTimePickerMode]   = useState('slot');
-  const [menuVisible, setMenuVisible]         = useState({ unit: false, category: false, interval: false });
-  const [pickerVisible, setPickerVisible]     = useState({ time: false, date: false });
-  const [modalType, setModalType]             = useState(null);
-  const [isSaving, setIsSaving]               = useState(false);
+  const [timePickerMode, setTimePickerMode]     = useState('slot');
+  const [menuVisible, setMenuVisible]           = useState({ unit: false, category: false, interval: false });
+  const [pickerVisible, setPickerVisible]       = useState({ time: false, date: false });
+  const [modalType, setModalType]               = useState(null);
+  const [isSaving, setIsSaving]                 = useState(false);
+
+  // ── Field-level errors (shown inline, not via modal) ──
+  const [fieldErrors, setFieldErrors] = useState({});
 
   const inputThemeProps = {
     cursorColor: theme.colors.primary,
@@ -120,8 +135,39 @@ export default function MedicationForm({ onBack, medicationId = null }) {
 
   // ── FORM HELPERS ────────────────────────────
   const updateForm   = (key, value) => setForm((prev) => ({ ...prev, [key]: value }));
+  const clearError   = (key) => setFieldErrors((prev) => { const n = { ...prev }; delete n[key]; return n; });
   const toggleMenu   = (key, isOpen) => setMenuVisible((prev) => ({ ...prev, [key]: isOpen }));
   const togglePicker = (key, isOpen) => setPickerVisible((prev) => ({ ...prev, [key]: isOpen }));
+
+  // ── DURATION ────────────────────────────────
+  const handleDurationChange = (val) => {
+    updateForm('duration', val);
+    const parsed = parseInt(val);
+    if (!val || !parsed || parsed < 1) {
+      setFieldErrors((prev) => ({ ...prev, duration: 'Minimum is 1 day.' }));
+    } else {
+      clearError('duration');
+    }
+  };
+
+  const handleDurationBlur = () => {
+    const parsed = parseInt(form.duration);
+    if (!parsed || parsed < 1) {
+      updateForm('duration', '1');
+      clearError('duration'); // snapped to valid, error no longer needed
+    }
+  };
+
+  // ── INVENTORY ───────────────────────────────
+  const handleStockChange = (val) => {
+    updateForm('stock', val);
+    if (validateInventoryLevels(val, form.reorderLevel)) clearError('stock');
+  };
+
+  const handleReorderChange = (val) => {
+    updateForm('reorderLevel', val);
+    if (validateInventoryLevels(form.stock, val)) clearError('stock');
+  };
 
   // ── TIME PICKER OPENERS ─────────────────────
   const openHourlyStartPicker = () => {
@@ -174,12 +220,32 @@ export default function MedicationForm({ onBack, medicationId = null }) {
 
   // ── VALIDATION ──────────────────────────────
   const validate = () => {
+    const errors = {};
+
+    // These stay as modals — they block the whole form, not a single field
     if (!form.name.trim() || !form.dosage || parseFloat(form.dosage) <= 0) {
       setModalType('emptyFields'); return false;
     }
     if (form.frequency !== 'hourly' && form.times.length === 0) {
       setModalType('noTimes'); return false;
     }
+
+    // Duration — clamp silently and never block
+    if (!form.isPermanent) {
+      const parsed = parseInt(form.duration);
+      if (!parsed || parsed < 1) updateForm('duration', '1');
+    }
+
+    // Inventory — inline error, block save
+    if (form.isInventoryEnabled && !validateInventoryLevels(form.stock, form.reorderLevel)) {
+      errors.stock = 'Total stock must be greater than the low stock alert.';
+    }
+
+    if (Object.keys(errors).length > 0) {
+      setFieldErrors(errors);
+      return false;
+    }
+
     if (!mainProfile) { console.error('[MedicationForm] No main profile found.'); return false; }
     return true;
   };
@@ -195,8 +261,6 @@ export default function MedicationForm({ onBack, medicationId = null }) {
       const endDate           = computeEndDate(form.startDate, form.duration, form.isPermanent);
       const now               = new Date();
 
-      // For hourly: only persist today's slots (daysOffset === 0).
-      // Tomorrow's doses are re-derived each day from the start time + interval.
       const finalTimes = form.frequency === 'hourly' ? todayHourlySlots : form.times;
 
       const scheduleData = finalTimes.map((t) => ({
@@ -213,7 +277,7 @@ export default function MedicationForm({ onBack, medicationId = null }) {
           category:           form.category,
           instructions:       form.instructions.trim() || null,
           isPermanent:        form.isPermanent,
-          duration:           form.isPermanent ? null : form.duration,
+          duration:           form.isPermanent ? null : Math.max(1, parseInt(form.duration) || 1),
           frequency:          frequencyConstant,
           intervalHours,
           intervalValue:      form.intervalValue,
@@ -333,7 +397,15 @@ export default function MedicationForm({ onBack, medicationId = null }) {
               {!form.isPermanent && (
                 <View style={styles.dynamicField}>
                   <FormLabel label="How many days?" />
-                  <ModernInput {...inputThemeProps} placeholder="7" keyboardType="numeric" value={form.duration} onChangeText={(val) => updateForm('duration', val)} />
+                  <ModernInput
+                    {...inputThemeProps}
+                    placeholder="7"
+                    keyboardType="numeric"
+                    value={form.duration}
+                    onChangeText={handleDurationChange}
+                    onBlur={handleDurationBlur}
+                  />
+                  {fieldErrors.duration && <InlineError message={fieldErrors.duration} theme={theme} />}
                 </View>
               )}
             </View>
@@ -382,19 +454,28 @@ export default function MedicationForm({ onBack, medicationId = null }) {
                   {form.times
                     .slice()
                     .sort((a, b) => a.hour * 60 + a.minute - (b.hour * 60 + b.minute))
-                    .map((slot, index) => (
-                      <Chip
-                        key={index}
-                        onPress={() => openEditTimePicker(index)}
-                        onClose={() => removeTimeSlot(index)}
-                        closeIcon="close-circle"
-                        style={[styles.timeChip, { backgroundColor: theme.colors.primaryContainer }]}
-                        textStyle={{ color: theme.colors.primary, fontFamily: 'Geist-Medium' }}
-                        icon="clock-outline"
-                      >
-                        {formatTime(slotToDate(slot))}
-                      </Chip>
-                    ))}
+                    .map((slot, index) => {
+                      const isPast = isSlotPassedToday(slot, form.startDate);
+                      return (
+                        <View key={index} style={styles.chipWrapper}>
+                          <Chip
+                            onPress={() => openEditTimePicker(index)}
+                            onClose={() => removeTimeSlot(index)}
+                            closeIcon="close-circle"
+                            style={[styles.timeChip, { backgroundColor: theme.colors.primaryContainer }]}
+                            textStyle={{ color: theme.colors.primary, fontFamily: 'Geist-Medium' }}
+                            icon="clock-outline"
+                          >
+                            {formatTime(slotToDate(slot))}
+                          </Chip>
+                          {isPast && (
+                            <Text style={[styles.startsTomorrowLabel, { color: theme.colors.secondary }]}>
+                              starts tomorrow
+                            </Text>
+                          )}
+                        </View>
+                      );
+                    })}
                 </View>
               )}
 
@@ -426,7 +507,6 @@ export default function MedicationForm({ onBack, medicationId = null }) {
                 <Text variant="titleMedium" style={styles.cardTitle}>Reminder Times</Text>
               </View>
 
-              {/* Single editable start time */}
               <View style={styles.group}>
                 <FormLabel label="First dose time" />
                 <TouchableRipple
@@ -444,12 +524,10 @@ export default function MedicationForm({ onBack, medicationId = null }) {
                 </TouchableRipple>
               </View>
 
-              {/* Auto-generated slots preview */}
               {generatedHourlySlots.length > 0 && (
                 <View style={styles.group}>
                   <FormLabel label={`Auto-generated (every ${form.intervalValue}h)`} />
 
-                  {/* ── MAINTENANCE: simple chips, no dates needed ── */}
                   {form.isPermanent ? (
                     <>
                       <View style={styles.chipRow}>
@@ -477,36 +555,25 @@ export default function MedicationForm({ onBack, medicationId = null }) {
                       </Text>
                     </>
                   ) : (
-                    /* ── SET DAYS: date-range header + slot rows ── */
                     (() => {
-                      const endDate = computeEndDate(form.startDate, form.duration, false);
+                      const endDate    = computeEndDate(form.startDate, form.duration, false);
                       const startLabel = formatDate(form.startDate);
                       const endLabel   = endDate ? formatDate(endDate) : '—';
 
                       return (
                         <View style={[styles.courseSlotContainer, { borderColor: theme.colors.outlineVariant, backgroundColor: theme.colors.surfaceVariant }]}>
-                          {/* Date range banner */}
                           <View style={[styles.courseRangeBanner, { backgroundColor: theme.colors.primaryContainer }]}>
                             <MaterialCommunityIcons name="calendar-range" size={14} color={theme.colors.primary} />
-                            <Text style={[styles.courseRangeText, { color: theme.colors.primary }]}>
-                              {startLabel}
-                            </Text>
+                            <Text style={[styles.courseRangeText, { color: theme.colors.primary }]}>{startLabel}</Text>
                             <MaterialCommunityIcons name="arrow-right" size={12} color={theme.colors.primary} style={{ opacity: 0.6 }} />
-                            <Text style={[styles.courseRangeText, { color: theme.colors.primary }]}>
-                              {endLabel}
-                            </Text>
-                            <Text style={[styles.courseRangeDuration, { color: theme.colors.primary }]}>
-                              · {form.duration}d
-                            </Text>
+                            <Text style={[styles.courseRangeText, { color: theme.colors.primary }]}>{endLabel}</Text>
+                            <Text style={[styles.courseRangeDuration, { color: theme.colors.primary }]}>· {form.duration}d</Text>
                           </View>
 
-                          {/* Slot rows */}
                           {generatedHourlySlots.map((slot, index) => {
                             const isStart   = index === 0;
                             const isNextDay = slot.daysOffset > 0;
-
-                            // Actual calendar date for this slot
-                            const slotDate = new Date(form.startDate);
+                            const slotDate  = new Date(form.startDate);
                             slotDate.setDate(slotDate.getDate() + slot.daysOffset);
                             const slotDateLabel = slotDate.toLocaleDateString([], { month: 'short', day: 'numeric' });
 
@@ -518,19 +585,14 @@ export default function MedicationForm({ onBack, medicationId = null }) {
                                   index < generatedHourlySlots.length - 1 && { borderBottomWidth: 1, borderBottomColor: theme.colors.outlineVariant },
                                 ]}
                               >
-                                {/* Left: date label */}
                                 <View style={styles.courseSlotDateCol}>
                                   <Text style={[styles.courseSlotDate, { color: isNextDay ? theme.colors.secondary : theme.colors.onSurfaceVariant }]}>
                                     {isNextDay ? slotDateLabel : 'Start date'}
                                   </Text>
                                   {isNextDay && (
-                                    <Text style={[styles.courseSlotNextTag, { color: theme.colors.secondary }]}>
-                                      next day
-                                    </Text>
+                                    <Text style={[styles.courseSlotNextTag, { color: theme.colors.secondary }]}>next day</Text>
                                   )}
                                 </View>
-
-                                {/* Right: time */}
                                 <View style={styles.courseSlotTimeCol}>
                                   <MaterialCommunityIcons
                                     name={isStart ? 'clock-start' : 'clock-outline'}
@@ -557,7 +619,6 @@ export default function MedicationForm({ onBack, medicationId = null }) {
                 </View>
               )}
 
-              {/* Start date */}
               <View style={[styles.dateTimeContainer, { borderTopColor: theme.colors.outlineVariant }]}>
                 <TouchableRipple onPress={() => togglePicker('date', true)} style={styles.flex1} borderless>
                   <View style={styles.dateTimeBox}>
@@ -597,13 +658,26 @@ export default function MedicationForm({ onBack, medicationId = null }) {
                 <View style={styles.row}>
                   <View style={{ flex: 1 }}>
                     <FormLabel label="Total Stock" />
-                    <ModernInput {...inputThemeProps} placeholder="e.g. 30" keyboardType="numeric" value={form.stock} onChangeText={(val) => updateForm('stock', val)} />
+                    <ModernInput
+                      {...inputThemeProps}
+                      placeholder="e.g. 30"
+                      keyboardType="numeric"
+                      value={form.stock}
+                      onChangeText={handleStockChange}
+                    />
                   </View>
                   <View style={{ flex: 1 }}>
                     <FormLabel label="Low Stock Alert" />
-                    <ModernInput {...inputThemeProps} placeholder="e.g. 5" keyboardType="numeric" value={form.reorderLevel} onChangeText={(val) => updateForm('reorderLevel', val)} />
+                    <ModernInput
+                      {...inputThemeProps}
+                      placeholder="e.g. 5"
+                      keyboardType="numeric"
+                      value={form.reorderLevel}
+                      onChangeText={handleReorderChange}
+                    />
                   </View>
                 </View>
+                {fieldErrors.stock && <InlineError message={fieldErrors.stock} theme={theme} />}
               </View>
             )}
           </Surface>
@@ -613,7 +687,6 @@ export default function MedicationForm({ onBack, medicationId = null }) {
             <Text variant="bodyMedium" style={{ color: theme.colors.onPrimaryContainer, lineHeight: 20 }}>
               {getScheduleSummary({
                 ...form,
-                // Pass todayHourlySlots for accurate "X doses today" count in summary
                 schedules: form.frequency === 'hourly' ? todayHourlySlots : form.times,
               })}
             </Text>
@@ -632,15 +705,15 @@ export default function MedicationForm({ onBack, medicationId = null }) {
             {isEditMode ? 'Update Medication' : 'Confirm & Save'}
           </Button>
 
-          {/* ── MODALS ── */}
+          {/* ── MODALS (only for blocking form-level errors) ── */}
           <StatusModal
             visible={modalType !== null}
             onDismiss={() => setModalType(null)}
-            title={modalType === 'pastTime' ? 'Invalid Time' : modalType === 'noTimes' ? 'No Reminder Times' : 'Missing Info'}
+            title={modalType === 'noTimes' ? 'No Reminder Times' : 'Missing Info'}
             message={
-              modalType === 'pastTime'   ? 'Reminders cannot be set in the past.'
-              : modalType === 'noTimes' ? 'Please add at least one reminder time.'
-              :                           'Please enter a medicine name and a valid dosage.'
+              modalType === 'noTimes'
+                ? 'Please add at least one reminder time.'
+                : 'Please enter a medicine name and a valid dosage.'
             }
             type="warning"
           />
@@ -649,7 +722,6 @@ export default function MedicationForm({ onBack, medicationId = null }) {
             show={pickerVisible.time}
             value={timePickerValue}
             startDate={form.startDate}
-            onInvalidTime={() => setTimeout(() => setModalType('pastTime'), 400)}
             onChange={(e, date) => { if (date) handleTimeConfirm(date); togglePicker('time', false); }}
             onCancel={() => { setEditingSlotIndex(-1); togglePicker('time', false); }}
           />
@@ -697,39 +769,24 @@ const styles = StyleSheet.create({
   startTimeLabel:    { fontFamily: 'Geist-Bold', fontSize: 22, flex: 1 },
   startTimeHint:     { fontFamily: 'Geist-Regular', fontSize: 12, opacity: 0.7 },
 
+  // Inline field error
+  inlineErrorRow:      { flexDirection: 'row', alignItems: 'center', gap: 5 },
+  inlineErrorText:     { fontFamily: 'Geist-Regular', fontSize: 12 },
+
+  // Chip with "starts tomorrow" label underneath
+  chipWrapper:         { alignItems: 'center', gap: 3 },
+  startsTomorrowLabel: { fontFamily: 'Geist-Regular', fontSize: 10, opacity: 0.8 },
+
   // ── Course (Set Days) slot list ──
-  courseSlotContainer: {
-    borderRadius: 16,
-    borderWidth: 1,
-    overflow: 'hidden',
-  },
-  courseRangeBanner: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-  },
+  courseSlotContainer: { borderRadius: 16, borderWidth: 1, overflow: 'hidden' },
+  courseRangeBanner:   { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 14, paddingVertical: 10 },
   courseRangeText:     { fontFamily: 'Geist-SemiBold', fontSize: 13 },
   courseRangeDuration: { fontFamily: 'Geist-Regular', fontSize: 12, opacity: 0.7 },
-  courseSlotRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 14,
-    paddingVertical: 11,
-  },
-  courseSlotDateCol:  { flex: 1, gap: 1 },
-  courseSlotDate:     { fontFamily: 'Geist-Medium', fontSize: 13 },
-  courseSlotNextTag:  { fontFamily: 'Geist-Regular', fontSize: 11, opacity: 0.75 },
-  courseSlotTimeCol:  { flexDirection: 'row', alignItems: 'center' },
-  courseSlotTime:     { fontFamily: 'Geist-SemiBold', fontSize: 15 },
-  courseSlotStartTag: {
-    fontFamily: 'Geist-Medium',
-    fontSize: 10,
-    marginLeft: 8,
-    paddingHorizontal: 7,
-    paddingVertical: 2,
-    borderRadius: 6,
-  },
+  courseSlotRow:       { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 14, paddingVertical: 11 },
+  courseSlotDateCol:   { flex: 1, gap: 1 },
+  courseSlotDate:      { fontFamily: 'Geist-Medium', fontSize: 13 },
+  courseSlotNextTag:   { fontFamily: 'Geist-Regular', fontSize: 11, opacity: 0.75 },
+  courseSlotTimeCol:   { flexDirection: 'row', alignItems: 'center' },
+  courseSlotTime:      { fontFamily: 'Geist-SemiBold', fontSize: 15 },
+  courseSlotStartTag:  { fontFamily: 'Geist-Medium', fontSize: 10, marginLeft: 8, paddingHorizontal: 7, paddingVertical: 2, borderRadius: 6 },
 });

@@ -20,6 +20,7 @@ export const CATEGORIES = [
 // ─────────────────────────────────────────────
 
 export const HOURLY_OPTIONS = ['1', '2', '3', '4', '6', '8', '12', '24'];
+// Removed '0' or any potential non-positive values to prevent infinite loops/inconsistency
 export const DAY_OPTIONS    = ['1', '2', '3', '4', '5', '6', '7', '14', '30'];
 
 // ─────────────────────────────────────────────
@@ -40,7 +41,7 @@ export const defaultForm = {
   intervalValue: '8',
   startDate: new Date(),
   isInventoryEnabled: false,
-  stock: '0',
+  stock: '10',         // Increased default to be > reorderLevel
   reorderLevel: '5',
   isAdjustable: false,
   times: [DEFAULT_TIME],
@@ -58,32 +59,15 @@ export const slotToDate = ({ hour, minute }) => {
 };
 
 /**
- * Generates one full 24h cycle of dose slots starting from (startHour, startMinute),
- * repeating every intervalHours. Each slot includes a `daysOffset` (0 or 1) to
- * indicate whether it fires today or wraps into the next calendar day.
- *
- * IMPORTANT: totalSlots = Math.floor(24 / intervalHours) — one cycle only.
- * e.g. every 8h → 3 slots, every 12h → 2 slots, every 6h → 4 slots.
- *
- * daysOffset is NEVER > 1 — this is a single repeating cycle, not a multi-day expansion.
- *
- * Examples (start 16:00, every 12h):
- *   → { hour: 16, minute: 0, daysOffset: 0 }  — today,    4:00 PM
- *   → { hour:  4, minute: 0, daysOffset: 1 }  — tomorrow, 4:00 AM
- *
- * Examples (start 08:00, every 8h):
- *   → { hour:  8, minute: 0, daysOffset: 0 }  — today,    8:00 AM
- *   → { hour: 16, minute: 0, daysOffset: 0 }  — today,    4:00 PM
- *   → { hour:  0, minute: 0, daysOffset: 1 }  — tomorrow, 12:00 AM
+ * Generates one full 24h cycle of dose slots starting from (startHour, startMinute).
  */
 export const generateHourlySlots = (startHour, startMinute, intervalHours) => {
   if (!intervalHours || intervalHours <= 0) return [];
 
   const startMinutes    = startHour * 60 + startMinute;
   const intervalMinutes = intervalHours * 60;
-  const minutesInDay    = 24 * 60; // 1440
+  const minutesInDay    = 24 * 60; 
 
-  // e.g. every 8h → 3 slots, every 12h → 2 slots, every 6h → 4 slots
   const totalSlots = Math.floor(24 / intervalHours);
 
   return Array.from({ length: totalSlots }, (_, i) => {
@@ -91,16 +75,11 @@ export const generateHourlySlots = (startHour, startMinute, intervalHours) => {
     return {
       hour:       Math.floor(totalMinutes / 60) % 24,
       minute:     totalMinutes % 60,
-      // 0 = fires today, 1 = wraps into tomorrow (never higher)
       daysOffset: Math.floor(totalMinutes / minutesInDay),
     };
   });
 };
 
-/**
- * Returns only today's slots (daysOffset === 0) from the full cycle.
- * Use this when saving to Realm or scheduling notifications.
- */
 export const getTodaySlots = (startHour, startMinute, intervalHours) =>
   generateHourlySlots(startHour, startMinute, intervalHours).filter(
     (s) => s.daysOffset === 0,
@@ -130,46 +109,18 @@ export const fromFrequencyConstant = (schemaFrequency) => {
 };
 
 // ─────────────────────────────────────────────
-// FORMATTING HELPERS
+// VALIDATION HELPERS
 // ─────────────────────────────────────────────
-
-export const formatTime = (date) => {
-  if (!date) return '--:--';
-  return new Date(date).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: true });
-};
-
-export const formatDate = (date) => {
-  if (!date) return '--/--/--';
-  return new Date(date).toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' });
-};
 
 /**
- * Formats a slot's time with an optional next-day date label.
- *
- * - daysOffset === 0 → "4:00 PM"
- * - daysOffset  >  0 → "4:00 AM · Feb 20"
- *
- * @param {{ hour: number, minute: number, daysOffset?: number }} slot
- * @param {Date} startDate - The medication's start date
+ * Ensures inventory logic remains consistent.
+ * Total stock should be higher than the alert level.
  */
-export const formatSlotLabel = (slot, startDate) => {
-  const d = new Date();
-  d.setHours(slot.hour, slot.minute, 0, 0);
-  const timeStr = formatTime(d);
-
-  const offset = slot.daysOffset ?? 0;
-  if (offset === 0) return timeStr;
-
-  const slotDate = new Date(startDate ?? new Date());
-  slotDate.setDate(slotDate.getDate() + offset);
-  const dateStr = slotDate.toLocaleDateString([], { month: 'short', day: 'numeric' });
-
-  return `${timeStr} · ${dateStr}`;
+export const validateInventoryLevels = (stock, reorderLevel) => {
+  const s = parseFloat(stock) || 0;
+  const r = parseFloat(reorderLevel) || 0;
+  return s > r;
 };
-
-// ─────────────────────────────────────────────
-// TIME VALIDATION HELPERS
-// ─────────────────────────────────────────────
 
 export const isSlotPassedToday = (slot, referenceDate) => {
   const now = new Date();
@@ -189,19 +140,41 @@ export const getPassedSlotLabel = (slot, startDate) =>
   isSlotPassedToday(slot, startDate) ? ' (tomorrow)' : '';
 
 // ─────────────────────────────────────────────
+// FORMATTING HELPERS
+// ─────────────────────────────────────────────
+
+export const formatTime = (date) => {
+  if (!date) return '--:--';
+  return new Date(date).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: true });
+};
+
+export const formatDate = (date) => {
+  if (!date) return '--/--/--';
+  return new Date(date).toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' });
+};
+
+export const formatSlotLabel = (slot, startDate) => {
+  const d = new Date();
+  d.setHours(slot.hour, slot.minute, 0, 0);
+  const timeStr = formatTime(d);
+
+  const offset = slot.daysOffset ?? 0;
+  if (offset === 0) return timeStr;
+
+  const slotDate = new Date(startDate ?? new Date());
+  slotDate.setDate(slotDate.getDate() + offset);
+  const dateStr = slotDate.toLocaleDateString([], { month: 'short', day: 'numeric' });
+
+  return `${timeStr} · ${dateStr}`;
+};
+
+// ─────────────────────────────────────────────
 // SCHEDULE SUMMARY
 // ─────────────────────────────────────────────
 
-/**
- * Builds a human-readable summary of the medication schedule.
- *
- * For hourly mode, `schedules` should be the today-only slots (daysOffset === 0)
- * so the dose count and times reflect what actually fires today.
- */
 export const getScheduleSummary = (form) => {
   const { frequency, intervalValue, isPermanent, duration, category, startDate, schedules = [] } = form;
 
-  // For hourly, only count today's slots for an accurate "X doses today" figure
   const todaySchedules = frequency === 'hourly'
     ? schedules.filter((s) => (s.daysOffset ?? 0) === 0)
     : schedules;
@@ -211,7 +184,11 @@ export const getScheduleSummary = (form) => {
     const timeStrings = slots
       .slice()
       .sort((a, b) => a.hour * 60 + a.minute - (b.hour * 60 + b.minute))
-      .map((s) => { const d = new Date(); d.setHours(s.hour, s.minute, 0, 0); return formatTime(d); });
+      .map((s) => { 
+        const d = new Date(); 
+        d.setHours(s.hour, s.minute, 0, 0); 
+        return formatTime(d); 
+      });
     if (timeStrings.length === 1) return `at ${timeStrings[0]}`;
     const last = timeStrings.pop();
     return `at ${timeStrings.join(', ')} and ${last}`;
@@ -231,7 +208,7 @@ export const getScheduleSummary = (form) => {
       text += ')';
     }
   } else if (frequency === 'interval') {
-    const days = parseInt(intervalValue) || 1;
+    const days = Math.max(1, parseInt(intervalValue) || 1); // Clamp to minimum 1
     text += `every ${days} ${days === 1 ? 'day' : 'days'}${timesPart ? ` ${timesPart}` : ''}`;
   }
 
@@ -245,10 +222,6 @@ export const getScheduleSummary = (form) => {
 // INTERVAL FILTER
 // ─────────────────────────────────────────────
 
-/**
- * Filters DAY_OPTIONS to only show intervals that fit within
- * the treatment duration (no point showing "every 14 days" for a 7-day course).
- */
 export const getFilteredDayOptions = (maxDays) => {
   const limit = parseInt(maxDays) || 1;
   return DAY_OPTIONS.filter((opt) => parseInt(opt) <= limit);

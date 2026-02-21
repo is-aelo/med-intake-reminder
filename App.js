@@ -1,7 +1,7 @@
 import 'react-native-gesture-handler';
 import React, { useState, createContext, useEffect, useRef, useMemo } from 'react';
 import { StatusBar, View, ActivityIndicator, AppState } from 'react-native';
-import { PaperProvider, FAB, Portal, Text, useTheme } from 'react-native-paper';
+import { PaperProvider, FAB, Portal, Text, Button, useTheme } from 'react-native-paper';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useFonts } from 'expo-font';
 
@@ -20,6 +20,8 @@ import { RealmSchemas, MedicationStatus, Profile, Medication } from './src/model
 import { lightTheme, darkTheme } from './src/theme';
 import NotificationService from './src/services/NotificationService';
 import AlarmOverlay from './src/components/AlarmOverlay';
+import { StatusModal } from './src/components/StatusModal';
+import { formatTime } from './src/constants/medicationOptions';
 
 export const ThemeContext = createContext({ toggleTheme: () => {}, isDarkMode: false });
 
@@ -33,6 +35,11 @@ import AddProfileScreen from './src/screens/AddProfileScreen';
 // SHARED LOGIC FOR SAVING LOGS
 // ─────────────────────────────────────────────
 
+/**
+ * Logs a medication action to Realm and handles inventory + nextOccurrence updates.
+ * Returns { medication, delayMinutes } so the caller can decide whether to show
+ * the Smart Adherence adjustment prompt.
+ */
 const performMedicationAction = async (realm, notification, actionId) => {
   const { medicationId, profileId, medicationName, dosageSnapshot, scheduledAt } =
     notification.data;
@@ -42,21 +49,23 @@ const performMedicationAction = async (realm, notification, actionId) => {
     const now = new Date();
     const medication = realm.objectForPrimaryKey('Medication', medId);
 
+    const delayMinutes = actionId === MedicationStatus.TAKEN
+      ? Math.max(0, Math.round((now - new Date(scheduledAt)) / 60000))
+      : 0;
+
     realm.write(() => {
       realm.create('MedicationLog', {
         _id: new Realm.BSON.UUID(),
         medicationId: medId,
         profileId: profileId ? new Realm.BSON.UUID(profileId) : null,
         medicationName: medication?.name ?? medicationName ?? 'Medication',
-        dosageSnapshot: medication 
-          ? `${medication.dosage} ${medication.unit}` 
+        dosageSnapshot: medication
+          ? `${medication.dosage} ${medication.unit}`
           : (dosageSnapshot ?? ''),
         status: actionId,
         scheduledAt: new Date(scheduledAt),
         takenAt: actionId === MedicationStatus.TAKEN ? now : null,
-        delayMinutes: actionId === MedicationStatus.TAKEN 
-          ? Math.max(0, Math.round((now - new Date(scheduledAt)) / 60000)) 
-          : 0,
+        delayMinutes,
         note: actionId === MedicationStatus.SKIPPED ? 'Skipped by user' : null,
       });
 
@@ -75,8 +84,12 @@ const performMedicationAction = async (realm, notification, actionId) => {
     }
 
     await notifee.cancelNotification(notification.id);
+
+    // Return what the caller needs to evaluate Smart Adherence
+    return { medication, delayMinutes, scheduledAt, takenAt: now };
   } catch (e) {
     console.error('[Action Handler Error]:', e);
+    return { medication: null, delayMinutes: 0, scheduledAt, takenAt: new Date() };
   }
 };
 
@@ -84,6 +97,8 @@ const performMedicationAction = async (realm, notification, actionId) => {
 // BACKGROUND EVENT HANDLER
 // ─────────────────────────────────────────────
 
+// Background handler cannot show a UI prompt — if taken late in the background,
+// we log the dose normally. The adjustment prompt only appears in the foreground.
 notifee.onBackgroundEvent(async ({ type, detail }) => {
   const { notification, pressAction } = detail;
   if (type === EventType.ACTION_PRESS && pressAction?.id) {
@@ -145,7 +160,7 @@ const checkAndHandleMissedDoses = (realm) => {
 };
 
 // ─────────────────────────────────────────────
-// NAVIGATION (FIXED TABS)
+// NAVIGATION
 // ─────────────────────────────────────────────
 
 const Tab = createBottomTabNavigator();
@@ -159,7 +174,7 @@ function MainTabs() {
       screenOptions={{
         headerShown: false,
         tabBarActiveTintColor: theme.colors.primary,
-        tabBarInactiveTintColor: theme.colors.onSurfaceVariant, // Ginawang muted gray para sa inactive
+        tabBarInactiveTintColor: theme.colors.onSurfaceVariant,
         tabBarLabelStyle: {
           fontFamily: 'Geist-Bold',
           fontSize: 12,
@@ -171,7 +186,7 @@ function MainTabs() {
           paddingTop: 10,
           backgroundColor: theme.colors.surface,
           borderTopWidth: 0,
-          elevation: 10, // Shadow para lumutang sa dark mode
+          elevation: 10,
         },
       }}
     >
@@ -181,11 +196,7 @@ function MainTabs() {
         options={{
           tabBarLabel: 'Today',
           tabBarIcon: ({ color, focused }) => (
-            <MaterialCommunityIcons 
-              name={focused ? "pill" : "pill"} // Pwedeng parehong pill, pero lumalaki ang size kapag focused
-              color={color} 
-              size={focused ? 28 : 24} 
-            />
+            <MaterialCommunityIcons name="pill" color={color} size={focused ? 28 : 24} />
           ),
         }}
       />
@@ -195,10 +206,10 @@ function MainTabs() {
         options={{
           tabBarLabel: 'History',
           tabBarIcon: ({ color, focused }) => (
-            <MaterialCommunityIcons 
-              name={focused ? "clipboard-text" : "clipboard-text-outline"} // Solid kapag active, Outline kapag hindi
-              color={color} 
-              size={focused ? 28 : 24} 
+            <MaterialCommunityIcons
+              name={focused ? 'clipboard-text' : 'clipboard-text-outline'}
+              color={color}
+              size={focused ? 28 : 24}
             />
           ),
         }}
@@ -219,8 +230,62 @@ function AppContent() {
   const [isInitializing, setIsInitializing] = useState(true);
   const [activeAlarm, setActiveAlarm] = useState(null);
 
+  // ── Smart Adherence prompt state ────────────
+  const [adherencePrompt, setAdherencePrompt] = useState(null);
+  // adherencePrompt shape:
+  // {
+  //   medication: Medication,
+  //   delayMinutes: number,
+  //   adjustedTime: Date,
+  //   scheduledAt: string,
+  // }
+
   const appState = useRef(AppState.currentState);
   const activeTheme = useMemo(() => (isDarkMode ? darkTheme : lightTheme), [isDarkMode]);
+
+  // ── Formats delay into a human-readable label ──
+  const formatDelay = (minutes) => {
+    if (minutes < 60) return `${minutes} min`;
+    const h = Math.floor(minutes / 60);
+    const m = minutes % 60;
+    return m > 0 ? `${h} hr ${m} min` : `${h} hr`;
+  };
+
+  // ── Handles the full "Taken" flow including Smart Adherence check ──
+  const handleTaken = async (alarm) => {
+    const { medication, delayMinutes, scheduledAt, takenAt } =
+      await performMedicationAction(realm, alarm, MedicationStatus.TAKEN);
+
+    setActiveAlarm(null);
+
+    // Only prompt if the medication has Smart Adherence enabled and delay is significant
+    if (
+      medication?.isAdjustable &&
+      NotificationService.shouldSuggestAdjustment(delayMinutes)
+    ) {
+      const adjustedTime = NotificationService.computeAdjustedNextTime(
+        medication,
+        scheduledAt,
+        delayMinutes,
+        takenAt,
+      );
+
+      if (adjustedTime) {
+        setAdherencePrompt({ medication, delayMinutes, adjustedTime, scheduledAt });
+      }
+    }
+  };
+
+  // ── Confirms the adjusted reschedule ──
+  const handleAdherenceConfirm = async () => {
+    if (!adherencePrompt) return;
+    const { medication, adjustedTime } = adherencePrompt;
+    await NotificationService.rescheduleNextAlarm(realm, medication, adjustedTime);
+    setAdherencePrompt(null);
+  };
+
+  // ── Dismisses prompt — normal schedule resumes unchanged ──
+  const handleAdherenceDismiss = () => setAdherencePrompt(null);
 
   useEffect(() => {
     checkAndHandleMissedDoses(realm);
@@ -235,13 +300,23 @@ function AppContent() {
 
     const unsubscribeForeground = notifee.onForegroundEvent(async ({ type, detail }) => {
       const { notification } = detail;
+
       if (type === EventType.DELIVERED && notification?.data?.isAlarm === 'true') {
         setActiveAlarm(notification);
       }
+
       if (type === EventType.ACTION_PRESS) {
-        await performMedicationAction(realm, notification, detail.pressAction.id);
-        setActiveAlarm(null);
+        const actionId = detail.pressAction.id;
+
+        if (actionId === MedicationStatus.TAKEN) {
+          // Route through handleTaken so Smart Adherence check runs
+          await handleTaken(notification);
+        } else {
+          await performMedicationAction(realm, notification, actionId);
+          setActiveAlarm(null);
+        }
       }
+
       if (type === EventType.DISMISSED) {
         setActiveAlarm((prev) => (prev?.id === notification?.id ? null : prev));
       }
@@ -288,13 +363,30 @@ function AppContent() {
           <View style={{ flex: 1, backgroundColor: activeTheme.colors.background }}>
             <StatusBar barStyle={isDarkMode ? 'light-content' : 'dark-content'} backgroundColor="transparent" translucent />
 
+            {/* ── Active alarm overlay ── */}
             {activeAlarm && (
               <AlarmOverlay
                 isVisible={true}
                 medication={activeAlarm.data}
-                onTake={() => performMedicationAction(realm, activeAlarm, MedicationStatus.TAKEN).then(() => setActiveAlarm(null))}
+                onTake={() => handleTaken(activeAlarm)}
                 onSnooze={() => performMedicationAction(realm, activeAlarm, MedicationStatus.SNOOZED).then(() => setActiveAlarm(null))}
                 onSkip={() => performMedicationAction(realm, activeAlarm, MedicationStatus.SKIPPED).then(() => setActiveAlarm(null))}
+              />
+            )}
+
+            {/* ── Smart Adherence adjustment prompt ── */}
+            {adherencePrompt && (
+              <StatusModal
+                visible={true}
+                onDismiss={handleAdherenceDismiss}
+                onConfirm={handleAdherenceConfirm}
+                type="info"
+                title="Adjust Next Reminder?"
+                message={
+                  `You took this ${formatDelay(adherencePrompt.delayMinutes)} late. ` +
+                  `Shift the next reminder to ${formatTime(adherencePrompt.adjustedTime)}?`
+                }
+                confirmLabel="Yes, adjust"
               />
             )}
 
