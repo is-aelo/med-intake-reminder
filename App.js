@@ -43,7 +43,6 @@ const performMedicationAction = async (realm, notification, actionId) => {
     const medication = realm.objectForPrimaryKey('Medication', medId);
 
     realm.write(() => {
-      // 1. Create the Log entry
       realm.create('MedicationLog', {
         _id: new Realm.BSON.UUID(),
         medicationId: medId,
@@ -52,7 +51,7 @@ const performMedicationAction = async (realm, notification, actionId) => {
         dosageSnapshot: medication 
           ? `${medication.dosage} ${medication.unit}` 
           : (dosageSnapshot ?? ''),
-        status: actionId, // TAKEN, SKIPPED, or MISSED
+        status: actionId,
         scheduledAt: new Date(scheduledAt),
         takenAt: actionId === MedicationStatus.TAKEN ? now : null,
         delayMinutes: actionId === MedicationStatus.TAKEN 
@@ -61,12 +60,10 @@ const performMedicationAction = async (realm, notification, actionId) => {
         note: actionId === MedicationStatus.SKIPPED ? 'Skipped by user' : null,
       });
 
-      // 2. Inventory Management (Only if taken)
       if (actionId === MedicationStatus.TAKEN && medication?.isInventoryEnabled && medication.stock > 0) {
         medication.stock -= 1;
       }
 
-      // 3. Update schedule (Move to next occurrence)
       if (medication && actionId !== MedicationStatus.SNOOZED) {
         medication.nextOccurrence = NotificationService.computeNextOccurrence(medication);
         medication.updatedAt = now;
@@ -115,14 +112,10 @@ const findDisplayedAlarm = async () => {
   }
 };
 
-/**
- * The "Janitor": Automatically marks doses as MISSED if they are > 2 hours overdue.
- */
 const checkAndHandleMissedDoses = (realm) => {
-  const MISSED_THRESHOLD_MS = 2 * 60 * 60 * 1000; // 2 Hours
+  const MISSED_THRESHOLD_MS = 2 * 60 * 60 * 1000;
   const now = new Date();
 
-  // Find active medications where the nextOccurrence is in the past beyond the threshold
   const overdueMeds = realm.objects('Medication').filtered(
     'isActive == true && nextOccurrence != null && nextOccurrence < $0',
     new Date(now.getTime() - MISSED_THRESHOLD_MS)
@@ -131,8 +124,6 @@ const checkAndHandleMissedDoses = (realm) => {
   if (overdueMeds.length > 0) {
     realm.write(() => {
       overdueMeds.forEach((med) => {
-        console.log(`[Janitor] Marking ${med.name} as MISSED`);
-        
         realm.create('MedicationLog', {
           _id: new Realm.BSON.UUID(),
           medicationId: med._id,
@@ -146,7 +137,6 @@ const checkAndHandleMissedDoses = (realm) => {
           note: 'Automatically marked as missed (2hr timeout)',
         });
 
-        // Advance to the next scheduled time
         med.nextOccurrence = NotificationService.computeNextOccurrence(med);
         med.updatedAt = now;
       });
@@ -155,7 +145,7 @@ const checkAndHandleMissedDoses = (realm) => {
 };
 
 // ─────────────────────────────────────────────
-// NAVIGATION
+// NAVIGATION (FIXED TABS)
 // ─────────────────────────────────────────────
 
 const Tab = createBottomTabNavigator();
@@ -163,17 +153,25 @@ const Tab = createBottomTabNavigator();
 function MainTabs() {
   const theme = useTheme();
   const insets = useSafeAreaInsets();
+
   return (
     <Tab.Navigator
       screenOptions={{
         headerShown: false,
         tabBarActiveTintColor: theme.colors.primary,
+        tabBarInactiveTintColor: theme.colors.onSurfaceVariant, // Ginawang muted gray para sa inactive
+        tabBarLabelStyle: {
+          fontFamily: 'Geist-Bold',
+          fontSize: 12,
+          marginBottom: 4,
+        },
         tabBarStyle: {
           height: 65 + insets.bottom,
-          paddingBottom: insets.bottom > 0 ? insets.bottom : 8,
-          paddingTop: 8,
+          paddingBottom: insets.bottom > 0 ? insets.bottom : 10,
+          paddingTop: 10,
           backgroundColor: theme.colors.surface,
           borderTopWidth: 0,
+          elevation: 10, // Shadow para lumutang sa dark mode
         },
       }}
     >
@@ -182,7 +180,13 @@ function MainTabs() {
         component={HomeScreen}
         options={{
           tabBarLabel: 'Today',
-          tabBarIcon: ({ color }) => <MaterialCommunityIcons name="pill" color={color} size={26} />,
+          tabBarIcon: ({ color, focused }) => (
+            <MaterialCommunityIcons 
+              name={focused ? "pill" : "pill"} // Pwedeng parehong pill, pero lumalaki ang size kapag focused
+              color={color} 
+              size={focused ? 28 : 24} 
+            />
+          ),
         }}
       />
       <Tab.Screen
@@ -190,7 +194,13 @@ function MainTabs() {
         component={HistoryScreen}
         options={{
           tabBarLabel: 'History',
-          tabBarIcon: ({ color }) => <MaterialCommunityIcons name="clipboard-text" color={color} size={26} />,
+          tabBarIcon: ({ color, focused }) => (
+            <MaterialCommunityIcons 
+              name={focused ? "clipboard-text" : "clipboard-text-outline"} // Solid kapag active, Outline kapag hindi
+              color={color} 
+              size={focused ? 28 : 24} 
+            />
+          ),
         }}
       />
     </Tab.Navigator>
@@ -213,7 +223,6 @@ function AppContent() {
   const activeTheme = useMemo(() => (isDarkMode ? darkTheme : lightTheme), [isDarkMode]);
 
   useEffect(() => {
-    // Check for missed doses immediately on mount
     checkAndHandleMissedDoses(realm);
 
     notifee.getInitialNotification().then((initial) => {
@@ -243,12 +252,9 @@ function AppContent() {
       const isNowActive = nextState === 'active';
 
       if (wasBackground && isNowActive) {
-        // Run Janitor every time app returns to foreground
         checkAndHandleMissedDoses(realm);
-
         const displayedAlarm = await findDisplayedAlarm();
         if (displayedAlarm) setActiveAlarm(displayedAlarm);
-
         try {
           await NotificationService.rescheduleAllAlarms(realm);
         } catch (e) {

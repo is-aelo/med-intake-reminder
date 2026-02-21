@@ -1,4 +1,3 @@
-// src/screens/HistoryScreen.js
 import React, { useMemo, useState } from 'react';
 import { View, StyleSheet, SafeAreaView, StatusBar, SectionList } from 'react-native';
 import { Text, Surface, useTheme, Avatar, TouchableRipple, Searchbar, IconButton, Portal, Dialog, Button } from 'react-native-paper';
@@ -13,7 +12,7 @@ const HistoryScreen = () => {
   const [searchQuery, setSearchQuery] = useState('');
   const [visible, setVisible] = useState(false); 
   
-  const rawLogs = useQuery(MedicationLog).sorted('takenAt', true);
+  const rawLogs = useQuery(MedicationLog).sorted('scheduledAt', true);
 
   const groupedLogs = useMemo(() => {
     const filtered = rawLogs.filter(log => 
@@ -21,27 +20,36 @@ const HistoryScreen = () => {
       log.medicationName.toLowerCase().includes(searchQuery.toLowerCase())
     );
 
-    return filtered.reduce((acc, log) => {
+    const groups = {};
+
+    filtered.forEach((log) => {
       const rawDate = log.takenAt || log.scheduledAt;
       const date = rawDate instanceof Date ? rawDate : new Date(rawDate);
-      if (!isValid(date)) return acc;
+      if (!isValid(date)) return;
 
-      let title = isToday(date) ? 'Today' : isYesterday(date) ? 'Yesterday' : format(date, 'MMMM d, yyyy');
-      const existingGroup = acc.find(g => g.title === title);
-      const logData = {
+      // Gumawa ng unique key (YYYY-MM-DD) para hindi mag-duplicate ang sections
+      const dateKey = format(date, 'yyyy-MM-dd');
+      
+      let title = format(date, 'MMMM d, yyyy');
+      if (isToday(date)) title = 'Today';
+      else if (isYesterday(date)) title = 'Yesterday';
+
+      if (!groups[dateKey]) {
+        groups[dateKey] = { title, data: [] };
+      }
+
+      groups[dateKey].data.push({
         _id: log._id.toString(),
         medicationName: log.medicationName,
         displayTime: format(date, 'p'),
         status: log.status?.toLowerCase() || 'taken',
-      };
+      });
+    });
 
-      if (existingGroup) {
-        existingGroup.data.push(logData);
-      } else {
-        acc.push({ title, data: [logData] });
-      }
-      return acc;
-    }, []);
+    // I-sort ang dates (pinakabago sa taas)
+    return Object.keys(groups)
+      .sort((a, b) => b.localeCompare(a))
+      .map(key => groups[key]);
   }, [rawLogs, searchQuery]);
 
   const handleClearHistory = () => {
@@ -51,10 +59,30 @@ const HistoryScreen = () => {
 
   const getStatusConfig = (status) => {
     const configs = {
-      taken: { color: theme.colors.primary, icon: 'check-circle-outline', label: 'TAKEN', bg: theme.colors.primaryContainer },
-      snoozed: { color: '#E65100', icon: 'clock-outline', label: 'SNOOZED', bg: '#FFF3E0' },
-      missed: { color: theme.colors.error, icon: 'close-circle-outline', label: 'MISSED', bg: theme.dark ? '#311010' : '#FFEBEE' },
-      skipped: { color: theme.colors.secondary, icon: 'skip-next-circle-outline', label: 'SKIPPED', bg: theme.colors.surfaceVariant }
+      taken: { 
+        color: theme.dark ? theme.colors.primary : '#2D5A27', 
+        icon: 'check-circle', 
+        label: 'TAKEN', 
+        bg: theme.dark ? '#1B2E1C' : '#E8F5E9' 
+      },
+      snoozed: { 
+        color: '#FF9800', 
+        icon: 'clock-outline', 
+        label: 'SNOOZED', 
+        bg: theme.dark ? '#33230B' : '#FFF3E0' 
+      },
+      missed: { 
+        color: theme.colors.error, 
+        icon: 'alert-circle-outline', 
+        label: 'MISSED', 
+        bg: theme.dark ? '#311010' : '#FFEBEE' 
+      },
+      skipped: { 
+        color: theme.colors.secondary, 
+        icon: 'skip-next-circle-outline', 
+        label: 'SKIPPED', 
+        bg: theme.colors.surfaceVariant 
+      }
     };
     return configs[status] || configs.taken;
   };
@@ -107,7 +135,7 @@ const HistoryScreen = () => {
                       <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, fontFamily: 'Geist-Regular' }}>{item.displayTime}</Text>
                     </View>
                   </View>
-                  <View style={[styles.customBadge, { backgroundColor: config.bg }]}>
+                  <View style={[styles.customBadge, { backgroundColor: config.bg, borderColor: config.color }]}>
                     <Text style={[styles.badgeText, { color: config.color }]}>{config.label}</Text>
                   </View>
                 </View>
@@ -117,7 +145,7 @@ const HistoryScreen = () => {
         }}
         renderSectionHeader={({ section: { title } }) => (
           <View style={styles.sectionHeader}>
-            <Text variant="labelLarge" style={[styles.sectionText, { color: theme.colors.secondary }]}>{title}</Text>
+            <Text variant="labelLarge" style={[styles.sectionText, { color: theme.colors.primary }]}>{title}</Text>
           </View>
         )}
         contentContainerStyle={styles.listContent}
@@ -133,7 +161,6 @@ const HistoryScreen = () => {
 
       <Portal>
         <Dialog visible={visible} onDismiss={() => setVisible(false)} style={[styles.dialog, { backgroundColor: theme.colors.elevation.level3 }]}>
-          {/* Changed Icon to alert-circle-outline for a cleaner warning look */}
           <Dialog.Icon icon="alert-circle-outline" color={theme.colors.error} size={48} />
           <Dialog.Title style={styles.dialogTitle}>Clear all history?</Dialog.Title>
           <Dialog.Content>
@@ -173,7 +200,7 @@ const styles = StyleSheet.create({
   leftSection: { flexDirection: 'row', alignItems: 'center', flex: 1 },
   textContainer: { marginLeft: 16 },
   medName: { fontFamily: 'Geist-SemiBold', fontSize: 17 },
-  customBadge: { paddingHorizontal: 12, paddingVertical: 4, borderRadius: 8, minWidth: 70, alignItems: 'center' },
+  customBadge: { paddingHorizontal: 12, paddingVertical: 4, borderRadius: 8, minWidth: 80, alignItems: 'center', borderWidth: 1 },
   badgeText: { fontSize: 10, fontFamily: 'Geist-Bold' },
   emptyContainer: { marginTop: 120, justifyContent: 'center', alignItems: 'center' },
   dialog: { borderRadius: 28, padding: 8 },

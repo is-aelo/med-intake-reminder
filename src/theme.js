@@ -25,18 +25,17 @@ export const lightTheme = {
     secondaryContainer: '#F1F5F2',
     onSecondaryContainer: '#1D241F',
 
-    background: '#FFFFFF',
-    surface: '#F9FBF9',           
+    background: '#F8F9F8',        // Mas malinis kaysa sa pure white
+    surface: '#FFFFFF',           
     surfaceVariant: '#F0F2F0',    // Neutral Greenish Gray for inputs
     onSurface: '#1B1C1B',         
-    onSurfaceVariant: '#444944',  // For placeholders and icons
+    onSurfaceVariant: '#5D635D',  // Higher contrast for text
 
     outline: '#D0D5D0',           
     outlineVariant: '#E0E4E0',    
     
     error: '#BA1A1A',
     
-    // In-override natin ang elevation para walang purple tint ang anino
     elevation: {
       level0: 'transparent',
       level1: '#F3F5F3',
@@ -55,34 +54,36 @@ export const darkTheme = {
   roundness: 16,
   colors: {
     ...MD3DarkTheme.colors,
-    primary: '#8BC34A',           // Brighter Green para readable sa dilim
-    onPrimary: '#0A1B07',
-    primaryContainer: '#1B3217',
+    // Ginamit natin ang Neon Green para sa Active States
+    primary: '#A7F305',           
+    onPrimary: '#051000',
+    primaryContainer: '#2D5A27',  
     onPrimaryContainer: '#C8E6C9',
 
     secondary: '#A5D6A7',         // Muted Sage
     onSecondary: '#0E1A11',
-    secondaryContainer: '#2D352F',
+    secondaryContainer: '#1F2922',
     onSecondaryContainer: '#D1E8D5',
 
-    background: '#0D110D',        // Deep Forest Black
-    surface: '#121612',           // Dark Surface for cards
-    surfaceVariant: '#242B24',    // Darker surface for inputs
-    onSurface: '#E2E3E2',         // Off-white text
-    onSurfaceVariant: '#BDBFBD',  // Muted gray text for labels
+    background: '#080A08',        // Pitch Black (Para lumutang ang mga cards)
+    surface: '#151915',           // Dark Surface na may hint ng green
+    surfaceVariant: '#222922',    
+    onSurface: '#F0F2F0',         // halos puti para madaling basahin
+    onSurfaceVariant: '#99A199',  // Eto ang kulay ng inactive tabs
 
     outline: '#3E443E',           
-    outlineVariant: '#242B24',
+    outlineVariant: '#2D352D',
     
     error: '#FFB4AB',
 
+    // Overrides para sa elevations sa dark mode
     elevation: {
       level0: 'transparent',
-      level1: '#1A211A',
-      level2: '#202920',
-      level3: '#263126',
-      level4: '#2C3A2C',
-      level5: '#324232',
+      level1: '#1C221C',          
+      level2: '#242C24',
+      level3: '#2D362D',
+      level4: '#364036',
+      level5: '#3F4A3F',
     }
   },
 };
